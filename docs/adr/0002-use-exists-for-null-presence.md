@@ -1,0 +1,3 @@
+# Use Exists for null presence
+
+The `Exists` Operator means that a Queryable Property has at least one non-null value, and `NotExists` is its logical complement, implemented as `~property.is_not(None)`. For an ordinary scalar property this remains equivalent to `IS NULL`; for a Proxied Attribute it means that empty, missing, and all-null related values satisfy `NotExists`, while any non-null related value satisfies `Exists`. This deliberately prioritizes the filter language's presence vocabulary over a particular SQL construct, although SQLAlchemy may render `EXISTS` or `NOT EXISTS` for a Proxied Attribute.
