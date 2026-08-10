@@ -5,11 +5,15 @@ This context describes immutable filters that select rows from a SQLAlchemy mode
 ## Language
 
 **Filter**:
-An immutable, recursive selection criterion containing exactly one of a Match, an AND group, an OR group, or a Related Filter.
-_Avoid_: Predicate, expression
+An immutable, recursive selection criterion containing exactly one of a Match, an AND group, an OR group, or a Related Filter, plus an optional Negate flag.
+_Avoid_: Expression
+
+**Negated Filter**:
+A Filter whose complete compiled criterion is logically inverted. Negation may be applied at any level of the recursive Filter tree.
+_Avoid_: Negative Predicate, NOT node
 
 **Match**:
-A leaf criterion that applies an Operator to a Queryable Property.
+A leaf criterion pairing a Queryable Property with the Predicate used to test it.
 _Avoid_: Condition, comparison
 
 **AND Group**:
@@ -25,7 +29,7 @@ A SQLAlchemy comparison-capable value resolved from the active model or supplied
 _Avoid_: Field, column
 
 **Proxied Attribute**:
-A Queryable Property backed by a SQLAlchemy association proxy. Each Match against a collection-valued Proxied Attribute independently tests whether some related value satisfies its Operator.
+A Queryable Property backed by a SQLAlchemy association proxy. Each Match against a collection-valued Proxied Attribute independently tests whether some related value satisfies its Predicate.
 
 **Related Filter**:
 A Filter evaluated against the target model of one named relationship and applied to the current model as one existential relationship condition.
@@ -34,14 +38,14 @@ A Filter evaluated against the target model of one named relationship and applie
 A consumer-supplied recovery function that maps an active model and literal property name to an alternative Queryable Property after normal property compilation fails, or returns no alternative.
 _Avoid_: Property factory, override
 
+**Predicate**:
+The comparison or test a Match applies to a Queryable Property. A Predicate may be operandless or may carry an operand through an Operator.
+_Avoid_: RawOperator, comparator
+
 **Operator**:
-The comparison or test a Match applies to a Queryable Property using an operand.
-_Avoid_: Comparator, operation
+An operand-bearing Predicate.
+_Avoid_: Operation
 
 **Exists**:
-An Operator that tests whether a Queryable Property has at least one non-null value. Its domain meaning is presence, regardless of the SQL construct used to express it.
+A Predicate that tests whether a Queryable Property has at least one non-null value. Its domain meaning is presence, regardless of the SQL construct used to express it.
 _Avoid_: IsNotNull
-
-**NotExists**:
-The logical complement of Exists; an Operator that tests whether a Queryable Property has no non-null value.
-_Avoid_: IsNull

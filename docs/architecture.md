@@ -13,8 +13,8 @@ The domain language is defined in [`CONTEXT.md`](CONTEXT.md). Decisions whose ra
 ```python
 filter_ = Filter(
     and_=(
-        Filter(match=Match(property="score", operator=Between((0, 5)))),
-        Filter(match=Match(property="name", operator=Contains("smith"))),
+        Filter(match=Match(property="score", using=Between((0, 5)))),
+        Filter(match=Match(property="name", using=Contains("smith"))),
     )
 )
 
@@ -26,15 +26,15 @@ The library builds SQLAlchemy expressions. It does not execute statements, own s
 ## Goals
 
 - Provide a small, typed Python vocabulary for property and relationship-scoped filtering.
-- Compile recursive Match, AND, OR, and Related trees into one SQLAlchemy where clause.
+- Compile recursive Match, AND, OR, and Related trees, with negation at any node,
+  into one SQLAlchemy where clause.
 - Support mapped scalar attributes, column properties, hybrid properties, direct column-targeted association proxies, and other SQLAlchemy `SQLCoreOperations` expressions.
-- Detect structurally invalid Filters during construction.
 - Detect invalid properties and Related relationships during compilation.
 - Let consumers lazily recover from any property compilation failure by supplying a trusted fallback property resolver.
-- Make Filter, Match, and built-in Operator values immutable, hashable, and deterministic, and require the same behavior from custom Operators.
+- Make Filter, Match, and built-in Predicate values immutable, hashable, and deterministic, and require the same behavior from custom Predicates.
 - Remain dialect-neutral to the extent enabled by SQLAlchemy's expression APIs.
 - Bias expression design toward common database performance practices without making execution-time guarantees.
-- Allow consumers to add custom immutable Operators.
+- Allow consumers to add custom immutable Predicates.
 
 ## Non-goals
 
@@ -44,7 +44,7 @@ The library builds SQLAlchemy expressions. It does not execute statements, own s
 - Automatically treating a Match as relationship traversal; relationship scope must be explicit through `via` or owned by a Proxied Attribute.
 - Rewriting or optimizing the Filter tree.
 - Query execution, session management, pagination, sorting, or projection.
-- A general NOT node.
+- Specialized universal relationship quantifiers.
 - A built-in where-clause cache.
 - Built-in limits on tree depth, group width, or Match count.
 - Database-specific query-plan or timing guarantees.
@@ -57,14 +57,15 @@ Consumers that accept untrusted input are responsible for authorization, complex
 Consumer Python code
     │ constructs frozen values
     ▼
-Filter / Match / Related / Operator tree
+Filter / Match / Related / Predicate tree
     │ MyModel.as_filtered_by(filter_)
     ▼
 Recursive compiler inside FilterableMixin
     ├── compiles Matches against the active model
     ├── lazily tries a model-aware fallback after a property failure
     ├── compiles Related Filters through relationship.any() / .has()
-    └── combines child clauses with and_() / or_()
+    ├── combines child clauses with and_() / or_()
+    └── negates each completed node whose negate flag is true
     ▼
 SQLAlchemy Boolean where-clause expression
     │ consumer attaches it to select/update/delete
@@ -74,6 +75,8 @@ SQLAlchemy rendering and database optimization
 
 `FilterableMixin.as_filtered_by()` is the only public compilation entry point. Private functions may separate traversal, property resolution, and error translation so each behavior can be tested independently.
 
+The compiler accepts a concrete mapped subclass of `DeclarativeBase` at that entry point and as every relationship target. Consumers own the declarative base, registry, and metadata; the compiler uses each model's `__mapper__` directly and creates no registry of its own. Imperative mapping and decorator-only declarative mapping are outside the supported contract, while `MappedAsDataclass` is optional and supported when combined with `DeclarativeBase`. Abstract and unmapped classes are programmer misuse with unspecified failure behavior, so this boundary is documented rather than runtime-validated. See [ADR 0005](adr/0005-require-concrete-declarative-base-models.md).
+
 ## Package structure
 
 ```text
@@ -82,7 +85,7 @@ src/sqlafilters/
 ├── exceptions.py     # InvalidFilterError, FilterCompilationError, BadRelationshipError
 ├── filters.py        # Filter, Match, and Related
 ├── mixins.py         # FilterableMixin and private compilation helpers
-├── operators.py      # Operator and built-in implementations
+├── operators.py      # Predicate, Operator, and built-in implementations
 ├── types.py          # shared SQLAlchemy typing aliases
 └── py.typed
 ```
@@ -108,7 +111,8 @@ Pydantic is not part of the target dependency set. The runtime depends on SQLAlc
 
 ### Filter
 
-A Filter is a frozen, slotted, keyword-only dataclass with four optional fields:
+A Filter is a frozen, slotted, keyword-only dataclass with four optional variant
+fields and one Boolean flag:
 
 ```python
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -117,16 +121,18 @@ class Filter:
     and_: tuple[Filter, ...] | None = None
     or_: tuple[Filter, ...] | None = None
     via: Related | None = None
+    negate: bool = False
 ```
 
-Exactly one field must be non-`None`.
+Exactly one variant field must be non-`None`.
 
 - `match` is a leaf.
 - `and_` is a non-empty tuple whose children must all match.
 - `or_` is a non-empty tuple for which at least one child must match.
 - `via` is a Related Filter evaluated against one direct mapped relationship.
+- `negate` logically inverts the complete expression compiled for this Filter node.
 
-AND and OR tuples preserve insertion order and duplicates. Equality and hashing are structural rather than logical: reordering children produces a different Filter value even when the database predicate would be logically equivalent. The compiler does not flatten, sort, deduplicate, or otherwise normalize groups.
+AND and OR tuples preserve insertion order and duplicates. Equality and hashing are structural rather than logical: reordering children or changing `negate` produces a different Filter value even when the database predicate would be logically equivalent. The compiler does not flatten, sort, deduplicate, or otherwise normalize groups.
 
 A singleton AND or OR group is valid and compiles to the same effective where clause as its only child. Empty groups are invalid.
 
@@ -141,7 +147,7 @@ class Related:
     where: Filter
 ```
 
-`relationship` must be a non-empty literal name of one direct SQLAlchemy relationship on the active model. Dots have no traversal semantics; callers express multiple hops by nesting Related Filters. `where` is compiled against the relationship's target model, then applied to the current model as one positive existential condition.
+`relationship` must be a non-empty literal name of one direct SQLAlchemy relationship on the active model. Dots have no traversal semantics; callers express multiple hops by nesting Related Filters. `where` is compiled against the relationship's target model, then applied to the current model as one existential condition. The containing Filter may negate that completed relationship expression, while a negated `where` remains inside the existential scope.
 
 For a collection relationship, Related uses `relationship.any(compiled_where)`. For a scalar relationship, it uses `relationship.has(compiled_where)`. SQLAlchemy owns secondary tables, custom join conditions, and correlation details. Empty collections and missing scalar relationships do not satisfy a positive Related Filter.
 
@@ -165,44 +171,41 @@ A Match is a frozen, slotted, keyword-only dataclass:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Match:
     property: str
-    operator: Operator[Any]
+    using: Predicate[Any]
 ```
 
-`property` must be a non-empty string. It names one direct class attribute on the mapped model. Dots have no traversal semantics; a dotted string is looked up as one attribute name and will normally fail compilation.
+`property` is expected to be a non-empty string. It names one direct class attribute on the mapped model. Blank and unknown names fail during compilation. Dots have no traversal semantics; a dotted string is looked up as one attribute name and will normally fail compilation.
 
-Operators are statically typed and expected to honor the immutable value contract. The library does not duplicate that contract with nominal runtime checks.
+Predicates are statically typed and expected to honor the immutable value contract. The library does not duplicate that contract with nominal runtime checks.
 
-### Construction invariants
+### Construction contract
 
-Semantic failures that static types cannot express raise `InvalidFilterError` as soon as the relevant value is constructed. These include:
+Static typing and consumer construction are the validation boundary. Filter values do not validate, coerce, or normalize their fields at runtime. Consumers provide exactly one of the four Filter variants, a Boolean `negate` value, non-empty AND and OR tuples, and non-blank property and relationship names. Blank names fail naturally during compilation; other malformed structures are outside the supported contract.
 
-- a Filter with zero or multiple populated variants;
-- an empty AND or OR tuple;
-- a blank property name;
-- a blank Related relationship name.
-
-Static typing is the primary validation boundary for nominal types, tuple members, Operator operands, and custom extensions. The dataclasses do not coerce or revalidate correctly typed inputs.
-
-## Operator model
+## Predicate model
 
 ### Extension contract
 
-`Operator` is a public abstract generic base with one required operation:
+`Predicate` is the public abstract generic contract accepted by Match:
 
 ```python
 type Property[T] = SQLCoreOperations[T]
 
 
-@dataclass(frozen=True, slots=True)
-class Operator[T](ABC):
+class Predicate[T](ABC):
     @abstractmethod
-    def apply(self, property: Property[T]) -> ColumnExpressionArgument[bool]:
+    def apply(self, property: Property[T]) -> FilterClause:
         """Return a SQLAlchemy Boolean expression."""
+
+
+@dataclass(frozen=True, slots=True)
+class Operator[T, OT = T](Predicate[T], ABC):
+    operand: OT
 ```
 
-The generic parameter represents the value exposed by the `Property[T]` accepted by `apply()`. Each concrete Operator declares its own operand shape and delegates directly to the corresponding `SQLCoreOperations` method. Most operands have the same type as the property value, while `Between[T]` accepts `tuple[T, T]` and `OneOf[T]` accepts `tuple[T, ...]`. Operators valid for every SQLAlchemy value, such as equality and presence, specialize with `Any`; ordered comparisons retain a bounded type parameter, and containment specializes to `str`. An exhaustive universal union would incorrectly exclude consumer-defined SQLAlchemy types. Presence Operators are naturally nullary because the base class does not prescribe an operand field.
+The Predicate generic parameter represents the value exposed by the `Property[T]` accepted by `apply()`. `Operator[T, OT]` is the operand-bearing Predicate specialization; its second parameter describes the stored operand and defaults to the property value type. Most Operators use that default, while `Between[T]` uses `tuple[T, T]` and `OneOf[T]` uses `tuple[T, ...]`. Predicates valid for every SQLAlchemy value, such as equality and presence, specialize with `Any`; ordered comparisons retain a bounded type parameter, and containment specializes to `str`. An exhaustive universal union would incorrectly exclude consumer-defined SQLAlchemy types. Presence Predicates directly subclass Predicate because they are operandless.
 
-Built-in Operators are frozen, slotted dataclasses whose value fields may be passed positionally. This keeps Match construction concise:
+Built-in Predicates are frozen, slotted dataclasses whose value fields may be passed positionally. This keeps Match construction concise:
 
 ```python
 Equals(5)
@@ -212,45 +215,41 @@ OneOf((1, 2, 3))
 Exists()
 ```
 
-Keyword arguments remain available when they improve clarity, but are never required for built-ins. A custom Operator should be immutable, hashable, and deterministic; these are consumer responsibilities rather than runtime-validated requirements.
+Keyword arguments remain available when they improve clarity, but are never required for built-ins. A custom Predicate should be immutable, hashable, and deterministic; these are consumer responsibilities rather than runtime-validated requirements. Custom operand-bearing Predicates subclass Operator; operandless Predicates subclass Predicate directly.
 
 ### Built-in surface
 
-| Operator | Fields | Meaning |
+| Predicate | Fields | Meaning |
 |---|---|---|
 | `Equals` | `operand` | property equals operand |
-| `NotEquals` | `operand` | property does not equal operand |
 | `LessThan` | `operand` | property is less than operand |
 | `LessThanOrEqual` | `operand` | property is at most operand |
 | `GreaterThan` | `operand` | property is greater than operand |
 | `GreaterThanOrEqual` | `operand` | property is at least operand |
 | `Between` | `operand` tuple | property is inclusively between the supplied bounds |
 | `Exists` | none | property has at least one non-null value |
-| `NotExists` | none | property has no non-null value |
 | `Contains` | `operand` | case-insensitive literal substring containment |
 | `ContainsExact` | `operand` | case-sensitive literal substring containment |
 | `OneOf` | `operand` tuple | property equals one member |
 
 ### Null policy
 
-Operand shapes are expressed through static annotations and are not revalidated during construction. Consumers use the dedicated presence Operators for null semantics:
-
-Presence is expressed only through complementary nullary Operators:
+Operand shapes are expressed through static annotations and are not revalidated during construction. Presence and its complement use one operandless Predicate plus Filter negation:
 
 ```python
 Exists()  # property.is_not(None)
-NotExists()  # ~property.is_not(None)
+Filter(match=Match(property="value", using=Exists()), negate=True)
 ```
 
-For an ordinary scalar property, `NotExists` is equivalent to `property.is_(None)`. For a Proxied Attribute, `Exists` means at least one related target value is non-null, while `NotExists` means no related target value is non-null. The latter therefore matches an empty or missing relationship and an all-null collection, but not a collection containing any non-null value. These Operators express domain-level presence rather than a request for a particular SQL construct, although a Proxied Attribute may cause SQLAlchemy to render `EXISTS` or `NOT EXISTS`. The rationale is recorded in [ADR 0002](adr/0002-use-exists-for-null-presence.md).
+For an ordinary scalar property, negated `Exists` is equivalent to `property.is_(None)`. For a Proxied Attribute, `Exists` means at least one related target value is non-null, while the negated Filter means no related target value is non-null. The latter therefore matches an empty or missing relationship and an all-null collection, but not a collection containing any non-null value. These Filters express domain-level presence rather than a request for a particular SQL construct, although a Proxied Attribute may cause SQLAlchemy to render `EXISTS` or `NOT EXISTS`. The rationale is recorded in [ADR 0002](adr/0002-use-exists-for-null-presence.md).
 
 ### Proxied attributes
 
 A Proxied Attribute is a direct, column-targeted SQLAlchemy `association_proxy`. It may be resolved under its model attribute name or returned under another literal name by fallback. `ColumnAssociationProxyInstance` and ordinary mapped expressions both satisfy `SQLCoreOperations`, so `Property` requires no runtime descriptor inspection.
 
-Built-ins invoke comparison methods on the proxy itself. This lets SQLAlchemy correlate the related table and produce the appropriate existential expression. Chained and object-targeted association proxies remain SQLAlchemy- or custom-Operator-defined behavior.
+Built-ins invoke comparison methods on the proxy itself. This lets SQLAlchemy correlate the related table and produce the appropriate existential expression. Chained and object-targeted association proxies remain SQLAlchemy- or custom-Predicate-defined behavior.
 
-Each Match against a collection-valued Proxied Attribute is an independent existential test. For example, a parent with related values `2` and `3` satisfies both `Equals(2)` and `NotEquals(2)`. `NotExists` is the deliberate exception to ordinary proxy operation forwarding: it remains the logical complement of `Exists`, so a mixture of null and non-null values satisfies only `Exists`.
+Each positive Match against a collection-valued Proxied Attribute is an independent existential test. Negating the containing Filter complements the complete proxy expression: negated `Equals(2)` means no related value equals `2`, rather than that some related value differs from `2`. The latter remains expressible with an explicit Related Filter containing a negated inner Match. Likewise, negated `Exists` is the logical complement of `Exists`, so a mixture of null and non-null values satisfies only the positive Filter.
 
 ### Between
 
@@ -287,21 +286,21 @@ Compilation first attempts a Match against the active mapped model. The active m
 1. Inspect the class as a SQLAlchemy mapped class.
 2. Reject the name if SQLAlchemy identifies it as a relationship property.
 3. Resolve the direct class attribute once with `getattr(cls, match.property)`.
-4. Pass the resolved value to `match.operator.apply()`.
+4. Pass the resolved value to `match.using.apply()`.
 
-Failure to inspect the model, resolve the attribute, or use the attribute with the selected Operator raises `FilterCompilationError`. If `as_filtered_by()` has no fallback, that error propagates immediately.
+Failure to resolve the attribute raises `FilterCompilationError`. SQLAlchemy mapper introspection is assumed to satisfy its documented contract. The resolved property is passed directly to `Predicate.apply()`, whose exceptions propagate unchanged. If `as_filtered_by()` has no fallback, a property-resolution error propagates immediately.
 
-Consumers may instead pass a keyword-only `fallback` with type `Callable[[type[DeclarativeBase], str], Property[Any] | None] | None`. The fallback is a recovery path for every `FilterCompilationError` from the normal property attempt, not only for an unknown name. It therefore may recover from a missing attribute, a Match that names a relationship, a descriptor failure, or an Operator expression failure. The model property always receives the first attempt; a fallback cannot eagerly override one that compiles successfully.
+Consumers may instead pass a keyword-only `fallback` with type `Callable[[type[DeclarativeBase], str], Property[Any] | None] | None`. The fallback is a recovery path for every `FilterCompilationError` from normal property resolution, not only for an unknown name. It therefore may recover from a missing attribute, a Match that names a relationship, or a descriptor failure. The model property always receives the first attempt; a fallback cannot eagerly override one that resolves successfully.
 
 The fallback receives the active model and the exact, unmodified `Match.property` string. The core compiler continues to assign no traversal semantics to dots, but trusted fallback logic may interpret the string, return aliases, calculated expressions, or direct column-targeted association proxies, and construct other custom SQLAlchemy properties. The consumer owns all such semantics.
 
-A successful non-`None` fallback result is memoized by `(active_model, literal_property_name)` for the duration of one top-level `as_filtered_by()` call. Every Match still tries normal property compilation first. Only after that attempt fails does compilation consult the per-call fallback cache or invoke the fallback. The cache is discarded when the call returns or raises; it is never shared across Filter values or calls. Returning `None` re-raises the original `FilterCompilationError`, so a `None` result ends compilation immediately and need not be cached.
+Every Match tries normal property resolution first. After that attempt fails, the compiler invokes the fallback directly for that Match. Fallback results are not cached or shared between Matches. Returning `None` re-raises the original `FilterCompilationError`.
 
-Fallback results are trusted. The compiler performs no nominal runtime class check before passing a non-`None` result to the same Operator. `Operator.apply()` remains the authority on whether the result is usable. If it raises `FilterCompilationError`, the new error propagates with the original normal-attempt error as its cause. If the fallback itself raises, its exception propagates with the original `FilterCompilationError` as its cause. Fallback logic is expected by convention to resolve a given property name deterministically, though the library cannot enforce that contract.
+Fallback results are trusted. The compiler performs no nominal runtime class check before passing a non-`None` result directly to the same Predicate. `Predicate.apply()` remains the authority on whether the result is usable, and its exceptions propagate unchanged. If the fallback itself raises, its exception propagates with the original `FilterCompilationError` as its cause. Fallback logic is expected by convention to resolve a given property name deterministically, though the library cannot enforce that contract.
 
 There is intentionally no allowlist of individual mapped fields or nominal descriptor classes. `Property` publicly names SQLAlchemy's common `SQLCoreOperations` behavior for static typing, but the resolver does not enforce a separate runtime class check. This admits mapped scalar attributes, `column_property` values, class-level hybrid expressions, direct column-targeted association proxies, compatible extension descriptors, and trusted fallback-generated properties.
 
-This boundary allows a Proxied Attribute, hybrid property, compatible extension descriptor, fallback, or custom Operator to produce an `EXISTS` subquery or another Boolean expression. SQLAlchemy or consumer code owns those property-level semantics; the compiler neither parses an implicit relationship path nor adds a join.
+This boundary allows a Proxied Attribute, hybrid property, compatible extension descriptor, fallback, or custom Predicate to produce an `EXISTS` subquery or another Boolean expression. SQLAlchemy or consumer code owns those property-level semantics; the compiler neither parses an implicit relationship path nor adds a join.
 
 ## Related filter resolution
 
@@ -309,81 +308,76 @@ Compilation resolves `Filter.via` separately from Match property resolution:
 
 1. Inspect the active model as a SQLAlchemy mapped class.
 2. Resolve `Related.relationship` as one direct mapped relationship; fallback is never consulted for it.
-3. Obtain the relationship's target mapped model and compile `Related.where` against that model, using the same model-aware fallback and per-call cache.
+3. Obtain the relationship's target mapped model and compile `Related.where` against that model, using the same model-aware fallback.
 4. Apply the compiled child expression through `.any()` when the relationship has `uselist=True`, or `.has()` when it has `uselist=False`.
 
-An invalid relationship name, a non-relationship attribute, failure to inspect the model for Related resolution, or failure to construct the required `.any()` or `.has()` expression raises `BadRelationshipError`. An error from within `Related.where` propagates unchanged and identifies its active target model; it is not wrapped with a relationship path.
+An invalid relationship name or non-relationship attribute raises `BadRelationshipError`. Mapper target resolution and construction of the appropriate `.any()` or `.has()` expression rely directly on SQLAlchemy's documented relationship behavior. An error from within `Related.where` propagates unchanged and identifies its active target model; it is not wrapped with a relationship path.
 
-Related is positive and existential only. It does not express universal matching, relationship absence, or negation. Nested Related Filters provide explicit multiple-hop scopes, while SQLAlchemy's relationship comparator remains responsible for custom joins, many-to-many secondary tables, and correlation SQL. See [ADR 0004](adr/0004-use-explicit-related-filter-scopes.md).
+Related first produces an existential relationship expression. A containing Filter with `negate=True` complements that complete expression, including matching empty collections or missing scalar relationships when the positive expression is false. Negating `Related.where` instead asks for an existing related row that fails the inner criterion. Neither form is presented as a specialized universal quantifier. Nested Related Filters provide explicit multiple-hop scopes, while SQLAlchemy's relationship comparator remains responsible for custom joins, many-to-many secondary tables, and correlation SQL. See [ADR 0004](adr/0004-use-explicit-related-filter-scopes.md).
 
 ## Recursive compilation
 
-Conceptually, compilation performs the following sequence. Before recursion starts, `_memoized_fallback()` wraps a supplied fallback with a per-call cache of successful non-`None` results keyed by `(model, property_name)`; it does not invoke the fallback eagerly.
+Conceptually, compilation performs the following sequence:
 
 ```python
 def _compile_match(
     model: type[DeclarativeBase],
     match: Match,
     fallback: Callable[[type[DeclarativeBase], str], Property[Any] | None] | None,
-) -> ColumnExpressionArgument[bool]:
+) -> FilterClause:
     try:
         property_ = resolve_property(model, match.property)
-        return match.operator.apply(property_)
     except FilterCompilationError as original:
         if fallback is None:
             raise
+    else:
+        return match.using.apply(property_)
 
-        try:
-            property_ = fallback(model, match.property)
-        except Exception as invalid:
-            raise invalid from original
+    try:
+        property_ = fallback(model, match.property)
+    except Exception as invalid:
+        raise invalid from original
 
-        if property_ is None:
-            raise original
+    if property_ is None:
+        raise original
 
-        try:
-            return match.operator.apply(property_)
-        except FilterCompilationError as invalid:
-            raise invalid from original
+    return match.using.apply(property_)
 
 
 def _compile_related(
     model: type[DeclarativeBase],
     related: Related,
     fallback: Callable[[type[DeclarativeBase], str], Property[Any] | None] | None,
-) -> ColumnExpressionArgument[bool]:
+) -> FilterClause:
     relationship = resolve_relationship(model, related.relationship)
     target_model = relationship.mapper.class_
     child_clause = _compile_filter(target_model, related.where, fallback)
 
-    try:
-        if relationship.uselist:
-            return getattr(model, related.relationship).any(child_clause)
-        return getattr(model, related.relationship).has(child_clause)
-    except Exception as original:
-        raise BadRelationshipError(...) from original
+    if relationship.uselist:
+        return getattr(model, related.relationship).any(child_clause)
+    return getattr(model, related.relationship).has(child_clause)
 
 
 def _compile_filter(
     model: type[DeclarativeBase],
     filter_: Filter,
     fallback: Callable[[type[DeclarativeBase], str], Property[Any] | None] | None,
-) -> ColumnExpressionArgument[bool]:
+) -> FilterClause:
     if filter_.match is not None:
-        return _compile_match(model, filter_.match, fallback)
-
-    if filter_.and_ is not None:
-        return and_(
+        clause = _compile_match(model, filter_.match, fallback)
+    elif filter_.and_ is not None:
+        clause = and_(
             *(_compile_filter(model, child, fallback) for child in filter_.and_)
         )
+    elif filter_.or_ is not None:
+        clause = or_(*(_compile_filter(model, child, fallback) for child in filter_.or_))
+    else:
+        clause = _compile_related(model, filter_.via, fallback)
 
-    if filter_.or_ is not None:
-        return or_(*(_compile_filter(model, child, fallback) for child in filter_.or_))
-
-    return _compile_related(model, filter_.via, fallback)
+    return not_(clause) if filter_.negate else clause
 ```
 
-The actual compiler is private. Construction invariants make an undefined branch impossible, so compilation does not invent identities for empty groups.
+The actual compiler is private. It assumes the construction contract and does not normalize malformed trees or invent identities for empty groups.
 
 Traversal is depth-first and stops at the first failing leaf. The compiler does not collect errors from the remaining tree.
 
@@ -401,10 +395,10 @@ class FilterableMixin:
         fallback: (
             Callable[[type[DeclarativeBase], str], Property[Any] | None] | None
         ) = None,
-    ) -> ColumnExpressionArgument[bool]: ...
+    ) -> FilterClause: ...
 ```
 
-It does not inherit `MappedAsDataclass` and defines no mapped fields. Consumers can combine it with `DeclarativeBase`, `MappedAsDataclass`, or their own declarative hierarchy:
+It does not inherit `MappedAsDataclass` and defines no mapped fields. Consumers combine it with a concrete mapped subclass of their own `DeclarativeBase`; that base may also inherit `MappedAsDataclass`:
 
 ```python
 class Base(DeclarativeBase, MappedAsDataclass):
@@ -419,13 +413,13 @@ class MyModel(FilterableMixin, Base):
     name: Mapped[str]
 ```
 
-If SQLAlchemy later proves to require additional declarative integration for a supported hierarchy, that requirement can be added without changing the Filter or Operator model. It is not part of the initial design.
+Imperative mappings and decorator-only declarative mappings are not supported integration paths.
 
 ## Error model
 
 ```python
 class InvalidFilterError(Exception):
-    """Base error for invalid Filter construction or compilation."""
+    """Base error for a Filter that cannot be compiled."""
 
 
 class FilterCompilationError(InvalidFilterError):
@@ -438,11 +432,11 @@ class BadRelationshipError(FilterCompilationError):
 
 No other public exception subclasses are defined.
 
-Compilation errors should identify the failing property and Operator. Normal property resolution and Operator application translate their own failures into `FilterCompilationError`.
+Property-resolution errors identify the active model and literal property name. Predicate applications are direct calls, and their exceptions propagate unchanged.
 
-Without a fallback, a recursive call lets the first `FilterCompilationError` propagate unchanged. With a fallback, returning `None` re-raises that original error. An exception raised by the fallback propagates from the original error. If applying the Operator to a non-`None` fallback property raises a new `FilterCompilationError`, that new error propagates from the original error. Recovery is attempted once; the compiler never invokes the fallback recursively for a failing fallback property.
+Without a fallback, a recursive call lets the first property-resolution `FilterCompilationError` propagate unchanged. With a fallback, returning `None` re-raises that original error, while an exception raised by the fallback propagates from it. Recovery is attempted once; the compiler never invokes the fallback recursively after applying a Predicate.
 
-`BadRelationshipError` identifies the active model and literal relationship name. It covers invalid Related relationship resolution and failure to create the appropriate relationship expression. Property and Operator failures inside `Related.where` retain their original subtype and identify the active target model; the compiler does not add relationship-path wrappers.
+`BadRelationshipError` identifies the active model and literal relationship name for invalid Related relationship resolution. Property and Predicate failures inside `Related.where` retain their original subtype and identify the active target model; the compiler does not add relationship-path wrappers.
 
 The compiler reports the failing leaf or relationship boundary; it does not snapshot or report the state of the entire Filter tree.
 
@@ -450,12 +444,12 @@ The compiler reports the failing leaf or relationship boundary; it does not snap
 
 Performance is a design bias, not a deterministic guarantee.
 
-- Operators construct SQLAlchemy expressions directly and keep operands parameterized.
-- The compiler does not add casts, functions, or joins. It produces correlated relationship subqueries only for explicit Related Filters or when the selected Proxied Attribute or Operator delegates that behavior to SQLAlchemy.
-- Library-provided Operators are deterministic, so structurally equal built-in Filter trees produce the same SQLAlchemy expression structure. Custom Operators must provide the same property by contract.
+- Predicates construct SQLAlchemy expressions directly and keep operands parameterized.
+- The compiler does not add casts, functions, or joins. It produces correlated relationship subqueries only for explicit Related Filters or when the selected Proxied Attribute or Predicate delegates that behavior to SQLAlchemy.
+- Library-provided Predicates are deterministic, so structurally equal built-in Filter trees produce the same SQLAlchemy expression structure. Custom Predicates must provide the same property by contract.
 - The compiler does not cache where-clause objects. SQLAlchemy owns its own statement compilation caching, and retaining expressions in a library cache could retain model metadata and operand values.
-- Within one `as_filtered_by()` call, the compiler memoizes successful fallback results by `(active_model, literal_property_name)`. This transient resolution cache avoids repeating consumer logic but never bypasses the normal property attempt and never outlives the call.
-- The compiler does not reorder, flatten, deduplicate, or algebraically rewrite Filter groups or Operator operands.
+- The compiler maintains no property, subtree, clause, or cross-call cache. SQLAlchemy remains responsible for its own statement compilation caching.
+- The compiler does not reorder, flatten, deduplicate, or algebraically rewrite Filter groups or Predicate values.
 - The database remains responsible for choosing indexes, join strategies, and execution plans.
 
 Some requested semantics inherently affect index use. For example, case-insensitive containment may render a case-folding expression on dialects without native `ILIKE`, and substring searches commonly need specialized indexes for large datasets. The library preserves the requested semantics and leaves database-specific physical design to consumers.
@@ -467,7 +461,7 @@ Related Filters and Proxied Attributes commonly render correlated `EXISTS` expre
 - During normal resolution, property and relationship names are used only for direct Python attribute lookup and are never interpolated into SQL text by the library.
 - Built-ins use SQLAlchemy expression methods so operands remain bound values.
 - A fallback is trusted library-consumer code. It receives the active model and literal property name and may interpret the name or construct arbitrary SQLAlchemy expressions; it can weaken the guarantees provided by normal property resolution.
-- A custom Operator is trusted library-consumer code and can weaken these guarantees if it emits raw SQL.
+- A custom Predicate is trusted library-consumer code and can weaken these guarantees if it emits raw SQL.
 - The library does not authorize which mapped properties or relationships a caller may filter. Consumers exposing Filters to less-trusted callers must enforce their own property and relationship policy.
 - The library imposes no recursion, relationship-depth, width, Match-count, or subquery-count limits. Consumers translating untrusted data must enforce limits before constructing a Filter.
 - Filter hashability does not imply that Filter contents are safe cache keys across processes or deployments; no serialized or stable cross-version hash contract exists.
@@ -478,18 +472,15 @@ Tests are behavior-focused and execute against an in-memory SQLite database. The
 
 ### Value-object behavior
 
-- construction accepts each valid Filter variant;
-- undefined and multiply defined Filters raise `InvalidFilterError`;
-- Related values require a non-blank relationship name;
-- groups reject empty tuples;
+- constructors preserve supplied values without validation or normalization;
 - singleton groups preserve the child's query behavior;
-- equivalent trees built from library-provided Operators compare and hash equally;
+- equivalent trees built from library-provided Predicates compare and hash equally;
 - reordered groups and duplicate-preserving groups retain structural value semantics.
 
-### Operator behavior
+### Predicate behavior
 
 - every built-in returns the expected rows at boundary and representative values;
-- `Exists` and `NotExists` implement complementary presence and absence behavior;
+- `Exists` and a negated Filter implement complementary presence and absence behavior;
 - `Between` passes its supplied bounds to SQLAlchemy in order;
 - containment is case-sensitive or insensitive as specified and treats `%` and `_` literally;
 - `OneOf` behaves correctly with duplicates.
@@ -499,14 +490,13 @@ Tests are behavior-focused and execute against an in-memory SQLite database. The
 - deeply nested AND/OR trees return the expected rows;
 - mapped scalar attributes, column properties, and hybrid properties work;
 - without a fallback, unknown attributes, relationships, and every other normal property failure propagate as `FilterCompilationError` immediately;
-- a fallback is invoked lazily after missing, relational, descriptor, and Operator expression failures;
+- a fallback is invoked lazily after missing, relational, and descriptor resolution failures;
 - a fallback receives the active model and literal property string and may return a usable custom property;
 - a `None` fallback result re-raises the original `FilterCompilationError`;
-- fallback exceptions and invalid fallback properties propagate from the original normal-attempt error;
-- successful fallback results are memoized by `(active_model, property_name)` within one call but do not eagerly override normal properties;
-- fallback caches are isolated across `as_filtered_by()` calls;
-- collection Related Filters use positive existential semantics and scalar Related Filters use positive scalar-reference semantics;
-- empty collections and missing scalar relationships do not satisfy a positive Related Filter;
+- fallback exceptions propagate from the original normal-resolution error, while Predicate exceptions propagate unchanged;
+- repeated failed Matches invoke fallback independently;
+- collection Related Filters use existential semantics and scalar Related Filters use scalar-reference semantics;
+- negating a completed Related Filter differs from negating its inner `where`, including for empty collections and missing scalar relationships;
 - one Related Filter binds an AND subtree to the same related row, while sibling Related Filters may match different rows;
 - nested Related Filters support multiple explicit relationship hops;
 - unknown and non-relationship `Related.relationship` names raise `BadRelationshipError`;
@@ -514,9 +504,9 @@ Tests are behavior-focused and execute against an in-memory SQLite database. The
 - fallback works inside `Related.where` and receives that target model;
 - direct column-targeted Proxied Attributes work with built-in operations supported by SQLAlchemy;
 - separate collection-valued Proxied Attribute Matches remain independent existential tests;
-- on Proxied Attributes, `Exists` is true for at least one non-null value and `NotExists` is its complement, including for empty, all-null, and mixed collections;
-- a custom Operator can compile and execute successfully;
-- an exception from a descriptor or custom Operator is wrapped and chained;
+- on Proxied Attributes, `Exists` is true for at least one non-null value and negating its Filter is the complement, including for empty, all-null, and mixed collections;
+- custom operand-bearing and operandless Predicates can compile and execute successfully;
+- an exception from a descriptor or custom Predicate is wrapped and chained;
 - traversal stops at the first failing leaf.
 
 SQLite is the executable behavioral reference for version 0.1. Dialect neutrality comes from using SQLAlchemy's public, dialect-agnostic expression APIs rather than from assertions about raw compiled SQL.
@@ -524,16 +514,16 @@ SQLite is the executable behavioral reference for version 0.1. Dialect neutralit
 ## Implementation sequence
 
 1. Add the three public exceptions.
-2. Implement frozen `Match`, `Related`, and `Filter` values with semantic construction invariants.
-3. Add the `Property` typing alias and one-method `Operator` base.
-4. Implement and behavior-test direct comparison and complementary presence Operators.
+2. Implement frozen `Match`, `Related`, and `Filter` values without runtime construction validation.
+3. Add the public `Property` typing alias, one-method `Predicate` contract, and operand-bearing `Operator` specialization.
+4. Implement and behavior-test direct comparison Operators and the presence Predicate.
 5. Implement direct `Between`, containment, and `OneOf` delegation.
 6. Implement private property and direct relationship resolution, including `BadRelationshipError` translation.
-7. Implement recursive Match, AND, OR, and Related compilation through `_compile_filter()`.
-8. Add the behavior-only `FilterableMixin` public entry point with its model-aware, per-call-memoized fallback recovery path.
-9. Re-export the supported API, including `Property`, `Related`, and `BadRelationshipError`, from `sqlafilters.__init__`.
+7. Implement recursive Match, AND, OR, and Related compilation, including node-level negation, through `_compile_filter()`.
+8. Add the behavior-only `FilterableMixin` public entry point with its model-aware fallback recovery path.
+9. Re-export the supported API, including `Predicate`, `Operator`, `Property`, `FilterClause`, `Related`, and `BadRelationshipError`, from `sqlafilters.__init__`.
 10. Remove the placeholder function and Pydantic dependency.
-11. Complete SQLite-backed behavioral coverage for nested trees, Related Filters, Proxied Attributes, custom Operators, and failures.
+11. Complete SQLite-backed behavioral coverage for nested trees, Related Filters, Proxied Attributes, custom Predicates, and failures.
 12. Update user-facing examples and API documentation to match the implemented contract.
 
 ## Decisions and future evolution
@@ -541,7 +531,6 @@ SQLite is the executable behavioral reference for version 0.1. Dialect neutralit
 The initial design deliberately keeps several extensions possible without promising them:
 
 - A standalone public compiler can be added if the mixin entry point proves constraining.
-- A general NOT node can be added as another mutually exclusive Filter variant.
 - Negative or universal Related quantifiers can be proposed with an explicit semantic model; positive `via` is not overloaded to provide them.
 - Additional built-ins can be added when their escaping, type, and portability contracts are settled.
 - A bounded compilation cache can be considered only after profiling demonstrates meaningful construction cost.

@@ -9,7 +9,6 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "pydantic>=2",
     "sqlalchemy>=2,<2.1",
 ]
 
@@ -20,8 +19,8 @@ dev = [
     "pytest-crap",
 ]
 local = [
-    "ty",
-    "prek"
+    "prek",
+    "mypy",
 ]
 
 [tool.pytest.ini_options]
@@ -33,18 +32,14 @@ testpaths = ["tests"]
 branch = true
 
 [tool.coverage.report]
-exclude_also = ["if TYPE_CHECKING:"]
-
-[tool.ty.rules]
-missing-type-argument = "error"
-possibly-unresolved-reference = "warn"
+exclude_also = ["TYPE_CHECKING"]
 
 [tool.ruff]
 unsafe-fixes = false
 extend-include = ["*.md"]
 
 [tool.ruff.lint]
-extend-select = ["ANN", "ASYNC", "PYI", "PT", "SIM", "TID", "PERF", "TRY"]
+extend-select = ["ANN", "ASYNC", "PYI", "PT", "SIM", "TID", "PERF", "TRY", "PGH003"]
 extend-ignore = ["TID252", "TRY003"]
 preview = true
 
@@ -56,6 +51,16 @@ docstring-code-format = true
 skip-magic-trailing-comma = true
 preview = true
 
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+missing-type-argument = "error"
+possibly-unresolved-reference = "warn"
+unsupported-dynamic-base = "warn"
+
+[tool.ty.analysis]
+strict-literal-narrowing = true
+strict-generic-narrowing = true
+
 [build-system]
-requires = ["uv_build>=0.11.32,<0.12.0"]
+requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"
