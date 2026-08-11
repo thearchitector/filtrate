@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .filters import Filter, Match, Related
     from .types import FilterClause, Property
 
-    type Fallback = Callable[[type[DeclarativeBase], str], Property[Any] | None]
+    type Fallback = Callable[[type[DeclarativeBase], Match], FilterClause | None]
 
 
 def _normal_property(model: type[DeclarativeBase], name: str) -> Property[Any]:
@@ -42,14 +42,14 @@ def _compile_match(
             raise
 
         try:
-            fallback_property = fallback(model, match.property)
+            fallback_clause = fallback(model, match)
         except Exception as error:
             raise error from original_error
 
-        if fallback_property is None:
+        if fallback_clause is None:
             raise
 
-    return match.using.apply(fallback_property)
+        return fallback_clause
 
 
 def _relationship_for(

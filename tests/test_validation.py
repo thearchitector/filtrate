@@ -72,26 +72,26 @@ def test_filter_rejects_multiple_clauses(arguments: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("operator", "operand", "msg"),
+    ("operator", "operand", "hint"),
     [
-        (LessThan, "invalid", "violates type hint ~Orderable"),
-        (LessThanOrEqual, "invalid", "violates type hint ~Orderable"),
-        (GreaterThan, "invalid", "violates type hint ~Orderable"),
-        (GreaterThanOrEqual, "invalid", "violates type hint ~Orderable"),
-        (Between, "invalid", r"violates type hint tuple\[~Orderable"),
-        (Contains, 1, "not instance of str"),
-        (StartsWith, 1, "not instance of str"),
-        (EndsWith, 1, "not instance of str"),
-        (ContainsExact, 1, "not instance of str"),
-        (StartsWithExact, 1, "not instance of str"),
-        (EndsWithExact, 1, "not instance of str"),
-        (OneOf, [1], "not instance of tuple"),
+        (LessThan, "invalid", "~Orderable"),
+        (LessThanOrEqual, "invalid", "~Orderable"),
+        (GreaterThan, "invalid", "~Orderable"),
+        (GreaterThanOrEqual, "invalid", "~Orderable"),
+        (Between, "invalid", r"tuple\[~Orderable"),
+        (Contains, 1, "<class 'str'>"),
+        (StartsWith, 1, "<class 'str'>"),
+        (EndsWith, 1, "<class 'str'>"),
+        (ContainsExact, 1, "<class 'str'>"),
+        (StartsWithExact, 1, "<class 'str'>"),
+        (EndsWithExact, 1, "<class 'str'>"),
+        (OneOf, [1], r"tuple\[object"),
     ],
 )
 def test_operators_reject_incompatible_operands(
-    operator: Callable[[Any], object], operand: object, msg: str
+    operator: Callable[[Any], object], operand: object, hint: str
 ) -> None:
-    with pytest.raises(InvalidFilterError, match=msg):
+    with pytest.raises(InvalidFilterError, match=f"{hint}"):
         operator(operand)
 
 

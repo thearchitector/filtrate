@@ -1,7 +1,7 @@
 from functools import reduce
 from typing import TYPE_CHECKING
 
-from beartype import BeartypeConf
+from beartype import BeartypeConf, BeartypeViolationVerbosity
 from beartype import beartype as _beartype
 from beartype.vale import IsAttr, IsEqual
 from sqlalchemy import ColumnElement
@@ -23,4 +23,9 @@ def IsType(*types: object) -> BeartypeValidator:
     return type_validator | IsAttr["remote_attr", type_validator]
 
 
-beartype = _beartype(conf=BeartypeConf(violation_type=InvalidFilterError))
+beartype = _beartype(
+    conf=BeartypeConf(
+        violation_type=InvalidFilterError,
+        violation_verbosity=BeartypeViolationVerbosity.MINIMAL,
+    )
+)

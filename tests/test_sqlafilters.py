@@ -3,7 +3,16 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import JSON, ForeignKey, Integer, String, create_engine, func, select
+from sqlalchemy import (
+    JSON,
+    ForeignKey,
+    Integer,
+    String,
+    and_,
+    create_engine,
+    func,
+    select,
+)
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import (
@@ -87,6 +96,8 @@ class Child(Base):
     parent_id: Mapped[int] = mapped_column(ForeignKey("parent.id"))
     color: Mapped[str] = mapped_column(String)
     score: Mapped[int] = mapped_column(Integer)
+    field: Mapped[str] = mapped_column(String)
+    value: Mapped[str] = mapped_column(String)
     parent: Mapped[Parent] = relationship(back_populates="children")
     grandchildren: Mapped[list[Grandchild]] = relationship(back_populates="child")
 
@@ -127,12 +138,18 @@ def session() -> Iterator[Session]:
     with Session(engine) as db:
         alpha = Parent(id=1, name="Alpha %_", score=1, payload={"x": 1})
         alpha.children = [
-            Child(color="red", score=1, grandchildren=[Grandchild(label="leaf")]),
-            Child(color="blue", score=3),
+            Child(
+                color="red",
+                score=1,
+                field="foo",
+                value="hello",
+                grandchildren=[Grandchild(label="leaf")],
+            ),
+            Child(color="blue", score=3, field="bar", value="hi"),
         ]
         alpha.profile = Profile(status="active")
         beta = Parent(id=2, name="beta", score=5, payload={"x": 2})
-        beta.children = [Child(color="red", score=3)]
+        beta.children = [Child(color="red", score=3, field="foo", value="say hi")]
         gamma = Parent(id=3, name="GAMMA", score=10, payload={"x": 3})
         null_tags = Parent(id=4, name="null tags", score=4, payload={})
         null_tags.tags = [Tag(value=None), Tag(value=None)]
@@ -154,7 +171,7 @@ def ids(
     session: Session,
     filter_: Filter,
     *,
-    fallback: Callable[[type[DeclarativeBase], str], Property[Any] | None]
+    fallback: Callable[[type[DeclarativeBase], Match], FilterClause | None]
     | None = None,
 ) -> list[int]:
     clause = Parent.as_filtered_by(filter_, fallback=fallback)
@@ -264,8 +281,8 @@ def test_root_and_nested_groups_with_negate_true_return_complementary_parent_ids
 def test_existing_property_with_fallback_returns_existing_property_matches(
     session: Session,
 ) -> None:
-    def fallback(model: type[DeclarativeBase], name: str) -> Property[Any] | None:
-        return Parent.score
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        raise AssertionError("fallback must not replace a readable property")
 
     assert ids(session, leaf("name", Equals("beta")), fallback=fallback) == [2]
 
@@ -274,25 +291,29 @@ def test_existing_property_with_fallback_returns_existing_property_matches(
 def test_missing_or_unusable_properties_with_fallback_return_fallback_matches(
     session: Session, name: str
 ) -> None:
-    def fallback(model: type[DeclarativeBase], literal: str) -> Property[Any] | None:
-        return Parent.score if model is Parent and literal == name else None
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        if model is Parent and match.property == name:
+            return match.using.apply(Parent.score)
+        return None
 
     assert ids(session, leaf(name, Equals(5)), fallback=fallback) == [2, 5]
 
 
 def test_unknown_property_with_declining_fallback_raises_compilation_error() -> None:
-    def fallback(model: type[DeclarativeBase], name: str) -> Property[Any] | None:
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         return None
 
     with pytest.raises(FilterCompilationError, match="missing"):
         Parent.as_filtered_by(leaf("missing", Equals(1)), fallback=fallback)
 
 
-def test_repeated_fallback_property_in_and_group_returns_matching_parent_ids(
+def test_repeated_fallback_match_in_and_group_returns_matching_parent_ids(
     session: Session,
 ) -> None:
-    def fallback(model: type[DeclarativeBase], name: str) -> Property[Any] | None:
-        return Parent.score if model is Parent and name == "alias" else None
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        if model is Parent and match.property == "alias":
+            return match.using.apply(Parent.score)
+        return None
 
     duplicated = Filter(
         and_=(leaf("alias", GreaterThan(0)), leaf("alias", LessThan(3)))
@@ -301,11 +322,29 @@ def test_repeated_fallback_property_in_and_group_returns_matching_parent_ids(
 
 
 def test_unknown_property_with_raising_fallback_propagates_fallback_error() -> None:
-    def exploding(model: type[DeclarativeBase], name: str) -> Property[Any] | None:
+    def exploding(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         raise RuntimeError("fallback exploded")
 
     with pytest.raises(RuntimeError, match="fallback exploded"):
         Parent.as_filtered_by(leaf("missing", Equals(1)), fallback=exploding)
+
+
+def test_fallback_can_compile_dynamic_child_fields_against_the_same_row(
+    session: Session,
+) -> None:
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        if model is not Parent:
+            return None
+
+        return Parent.children.any(
+            and_(Child.field == match.property, match.using.apply(Child.value))
+        )
+
+    dynamic = leaf("foo", Contains("hi"))
+    assert ids(session, dynamic, fallback=fallback) == [2]
+    assert ids(
+        session, Filter(match=dynamic.match, negate=True), fallback=fallback
+    ) == [1, 3, 4, 5, 6]
 
 
 def related(name: str, where: Filter) -> Filter:
@@ -375,8 +414,10 @@ def test_related_filters_nested_across_two_hops_return_matching_parent_ids(
 def test_related_match_with_target_model_fallback_returns_matching_parent_ids(
     session: Session,
 ) -> None:
-    def fallback(model: type[DeclarativeBase], name: str) -> Property[Any] | None:
-        return Child.color if model is Child and name == "shade" else None
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        if model is Child and match.property == "shade":
+            return match.using.apply(Child.color)
+        return None
 
     clause = related("children", leaf("shade", Equals("blue")))
     assert ids(session, clause, fallback=fallback) == [1]
@@ -398,7 +439,7 @@ def test_unknown_nested_property_used_in_related_filter_raises_compilation_error
 
 
 def test_invalid_relationship_with_match_fallback_raises_relationship_error() -> None:
-    def fallback(model: type[DeclarativeBase], name: str) -> Property[Any] | None:
+    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         raise AssertionError("fallback is only for Match properties")
 
     with pytest.raises(BadRelationshipError):

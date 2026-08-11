@@ -25,7 +25,7 @@ A non-empty Filter group for which at least one child Filter must be satisfied.
 _Avoid_: Disjunction, any-of group
 
 **Queryable Property**:
-A SQLAlchemy comparison-capable value resolved from the active model or supplied by a Fallback Property Resolver. It may represent one direct value or related values through a Proxied Attribute.
+A SQLAlchemy comparison-capable value resolved from the active model. It may represent one direct value or related values through a Proxied Attribute.
 _Avoid_: Field, column
 
 **Proxied Attribute**:
@@ -34,8 +34,8 @@ A Queryable Property backed by a SQLAlchemy association proxy. Each Match agains
 **Related Filter**:
 A Filter evaluated against the target model of one named relationship and applied to the current model as one existential relationship condition.
 
-**Fallback Property Resolver**:
-A consumer-supplied recovery function that maps an active model and literal property name to an alternative Queryable Property after normal property compilation fails, or returns no alternative.
+**Fallback Match Compiler**:
+A consumer-supplied recovery function that maps an active model and complete Match to a Boolean clause after normal property resolution fails, or returns no alternative.
 _Avoid_: Property factory, override
 
 **Predicate**:

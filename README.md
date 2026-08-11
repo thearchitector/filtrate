@@ -1,21 +1,12 @@
 # sqlafilters
 
-`sqlafilters` builds immutable filter values and compiles them into SQLAlchemy 2.0
-Boolean expressions. Consumers keep ownership of queries, sessions, serialization,
-and the policy that decides which fields callers may use.
+[![bear-ified](https://raw.githubusercontent.com/beartype/beartype-assets/main/badge/bear-ified.svg)](https://beartype.readthedocs.io)
 
-It requires Python 3.14 and SQLAlchemy `>=2,<2.1`.
+`sqlafilters` lets you arbitrarily filter declarative SQLAlchemy models.
 
-## Model integration
+Requires Python 3.14 and SQLAlchemy `>=2,<2.1`. Type checked.
 
-Add `FilterableMixin` to a declarative model, construct a `Filter`, and attach the
-result of `as_filtered_by()` to any SQLAlchemy statement:
-
-The supported model contract is a concrete mapped subclass of `DeclarativeBase`.
-Applications own the `DeclarativeBase` subclass, registry, and metadata;
-`FilterableMixin` only adds filter compilation. Imperative mapping and
-decorator-only declarative mapping are not supported. `MappedAsDataclass` is
-optional and is supported when used with `DeclarativeBase`.
+## Quick start
 
 ```python
 from sqlalchemy import select
@@ -39,10 +30,7 @@ filter_ = Filter(match=Match(property="age", using=Equals(42)))
 statement = select(User).where(User.as_filtered_by(filter_))
 ```
 
-Filter values are frozen, slotted, structurally comparable, and hashable. Every
-Filter has a `negate` flag, defaulting to `False`, that logically negates that
-node's complete compiled expression. `and_` and `or_` take non-empty tuples; they
-preserve child order and duplicates.
+Filters compose with `and_`, `or_`, and `negate` at any depth:
 
 ```python
 from sqlafilters import Contains, GreaterThan, OneOf
@@ -53,26 +41,21 @@ filter_ = Filter(
         Filter(
             or_=(
                 Filter(match=Match(property="email", using=Contains("@example"))),
-                Filter(match=Match(property="id", using=OneOf((1, 2, 2)))),
+                Filter(match=Match(property="id", using=OneOf((1, 2, 3)))),
             )
         ),
     )
 )
+
+not_42 = Filter(match=Match(property="age", using=Equals(42)), negate=True)
 ```
 
-Negation works at any depth. For example, this selects users whose age is not 42:
+`Filter`, `Match`, `Related`, and built-in Predicates are frozen, hashable values.
 
-```python
-filter_ = Filter(
-    match=Match(property="age", using=Equals(42)),
-    negate=True,
-)
-```
+## Relationships
 
-## Relationship scopes
-
-`Related` names one direct mapped relationship. Collection relationships compile
-through `any()` and scalar relationships through `has()`:
+`Related` applies its complete inner filter to one related row. Collections use
+SQLAlchemy's `.any()` and scalar relationships use `.has()`:
 
 ```python
 from sqlafilters import Related
@@ -90,26 +73,31 @@ filter_ = Filter(
 )
 ```
 
-Both matches above apply to the same order. Separate sibling `Related` nodes are
-independent existential scopes and may be satisfied by different rows. Express
-multiple relationship hops with nested `Related` values; dotted names never imply
-traversal.
+Nest `Related` for multiple hops. Dotted property names do not imply traversal.
 
-## Fallback properties
+Direct column-targeted association proxies work like ordinary properties:
 
-A trusted fallback can recover from any normal property compilation failure. It
-receives the active model—including a relationship target model—and the exact
-literal property name:
+```python
+filter_ = Filter(match=Match(property="tag_names", using=Equals("python")))
+```
+
+## Fallback matches
+
+When normal property resolution fails, `fallback` receives the active model and
+the complete `Match`, and returns a Boolean clause. A computed property is one line:
 
 ```python
 from sqlalchemy import func
 from sqlalchemy.orm import DeclarativeBase
-from sqlafilters import Contains, Property
+from sqlafilters import Contains, FilterClause
 
 
-def fallback(model: type[DeclarativeBase], name: str) -> Property[str] | None:
-    if model is User and name == "email_domain":
-        return func.substr(User.email, func.instr(User.email, "@") + 1)
+def fallback(
+    model: type[DeclarativeBase], match: Match
+) -> FilterClause | None:
+    if model is User and match.property == "email_domain":
+        domain = func.substr(User.email, func.instr(User.email, "@") + 1)
+        return match.using.apply(domain)
     return None
 
 
@@ -117,97 +105,69 @@ filter_ = Filter(match=Match(property="email_domain", using=Contains("example"))
 clause = User.as_filtered_by(filter_, fallback=fallback)
 ```
 
-Normal mapped resolution always runs first. The fallback is invoked independently
-for every Match whose normal property resolution fails; results are not cached.
-Fallbacks are consumer-controlled SQL construction and therefore part of the
-trusted boundary.
-
-Direct column-targeted `association_proxy` attributes are supported by built-ins:
+The same hook can compile dynamic key/value children. Given `Parent.children` and
+`Child(field, value)`:
 
 ```python
-filter_ = Filter(match=Match(property="tag_names", using=Equals("python")))
+from sqlalchemy import and_
+
+
+def child_fields(
+    model: type[DeclarativeBase], match: Match
+) -> FilterClause | None:
+    if model is not Parent:
+        return None
+
+    return Parent.children.any(
+        and_(
+            Child.field == match.property,
+            match.using.apply(Child.value),
+        )
+    )
+
+
+filter_ = Filter(match=Match(property="foo", using=Contains("hi")))
+clause = Parent.as_filtered_by(filter_, fallback=child_fields)
 ```
 
-Each positive proxy Match is its own existential test. Negating the Filter negates
-the complete proxy expression, so a negated `Equals("python")` means that no
-related value equals `"python"`. To express “some related value does not equal
-`"python"`,” use an explicit `Related` Filter and negate the inner value Match.
+This produces one correlated `EXISTS`, so `field == "foo"` and the value predicate
+must match the same child. Readable mapped properties always win; returning `None`
+preserves the original `FilterCompilationError`.
 
 ## Predicates
-
-The built-in surface is:
 
 | Family | Predicates |
 | --- | --- |
 | Comparison | `Equals`, `OneOf` |
 | Ordering | `LessThan`, `LessThanOrEqual`, `GreaterThan`, `GreaterThanOrEqual`, `Between` |
-| Containment | `Contains`, `ContainsExact` |
+| Text | `Contains`, `StartsWith`, `EndsWith` and their `Exact` variants |
 | Presence | `Exists` |
 
-Predicates delegate directly to SQLAlchemy's property operations. `Predicate[T]`
-is the public one-method contract accepted by `Match`; `Operator[T, OT]` is its
-operand-bearing specialization. `Predicate[T]` and `Property[T]` communicate
-property-value compatibility statically instead of duplicating it as runtime
-validation. Each concrete Operator declares its own operand shape: `Between[T]`
-accepts `tuple[T, T]`, while `OneOf[T]` accepts `tuple[T, ...]`, and both operate on
-`Property[T]`. Universally applicable predicates such as equality and presence use
-`Any`; ordered comparisons remain generic, and containment is fixed to `str`.
-`Between` is inclusive and expects its bounds in the desired order. `OneOf`
-preserves tuple order and duplicates.
-`Contains` is case-insensitive and `ContainsExact` uses SQLAlchemy's case-sensitive
-containment operation; both enable `autoescape`, so caller-supplied `%` and `_` are
-literal characters rather than wildcard syntax.
+Text predicates escape `%` and `_`. The default variants are case-insensitive;
+`Exact` variants use SQLAlchemy's case-sensitive operations. Negate a containing
+`Filter` instead of using separate not-equal or not-exists predicates.
 
-`Exists` means “at least one non-null value.” A Filter containing `Exists()` with
-`negate=True` is its logical complement. For an ordinary scalar these behave like
-`IS NOT NULL` and `IS NULL`. For an association-proxy collection, the negated
-Filter matches empty and all-null collections, while `Exists` matches mixed and
-all-non-null collections.
-
-The former `NotEquals` and `NotExists` Predicates have been removed. Replace them
-with Filters containing `Equals` or `Exists`, respectively, and set `negate=True`.
-
-Custom Predicates implement one method and should themselves be immutable,
-hashable, and deterministic. Subclass `Operator` when the Predicate stores an
-operand:
+Custom Predicates implement `apply`:
 
 ```python
 from dataclasses import dataclass
-from sqlafilters import FilterClause, Operator, Predicate, Property
+from sqlafilters import Operator, Property
 
 
 @dataclass(frozen=True, slots=True)
-class StartsWith(Operator[str]):
-    operand: str
+class IsDivisibleBy(Operator[int]):
+    operand: int
 
-    def apply(self, property: Property[str]) -> FilterClause:
-        return property.startswith(self.operand, autoescape=True)
-
-
-@dataclass(frozen=True, slots=True)
-class IsPositive(Predicate[int]):
     def apply(self, property: Property[int]) -> FilterClause:
-        return property > 0
+        return property % self.operand == 0
 ```
 
-## Errors and trust boundary
+## Errors and safety
 
-Filter values do not perform runtime construction validation. Consumers are
-responsible for constructing exactly one variant with non-empty groups. Blank or
-unknown property names and descriptor access fail with `FilterCompilationError`
-during compilation. Predicates are applied directly, so their exceptions propagate
-unchanged. Unknown and non-relationship direct relationship names raise
-`BadRelationshipError`, a subtype of `FilterCompilationError`. Compilation is
-depth-first and stops at the first failing leaf. A fallback exception or
-fallback-property compilation error is chained from the original normal-resolution
-error.
+Unknown properties raise `FilterCompilationError`; invalid `Related` names raise
+`BadRelationshipError`. Predicate errors propagate unchanged, while fallback errors
+are chained from the original property-resolution error.
 
-Normal names are used only for direct Python attribute lookup, and built-in
-operands remain SQLAlchemy bound values. This is not an authorization layer:
-applications accepting untrusted filter input must allowlist permitted properties
-and relationships and must bound tree depth, width, match count, and relationship
-depth before constructing values. Custom Predicates and fallbacks are trusted code
-that can weaken the normal SQL-safety boundary.
-
-Serialization, specialized universal relationship scopes, a standalone public
-compiler, and cross-call compilation caches are intentionally outside the v0.1 API.
+Treat custom Predicates and fallbacks as trusted SQL construction. Applications
+accepting untrusted filters should allowlist properties and relationships and bound
+tree depth, width, and match count.
