@@ -18,14 +18,14 @@ class Predicate[T](ABC):
         raise NotImplementedError()
 
 
-@dataclass(frozen=True, slots=True)
-class Operator[T, OT = T](Predicate[T], ABC):
-    operand: OT
-
-
 @dataclass_transform(frozen_default=True)
 def register[O: Predicate[Any]](type: type[O]) -> type[O]:
     return beartype(dataclass(type, frozen=True, slots=True))
+
+
+@dataclass(frozen=True, slots=True)
+class Operator[T, OT = T](Predicate[T], ABC):
+    operand: OT
 
 
 @register
@@ -131,8 +131,8 @@ class EndsWithExact(Operator[str]):
 
 
 @register
-class OneOf(Operator[Any, tuple[Any, ...]]):
-    operand: tuple[Any, ...]
+class OneOf(Operator[object, tuple[object, ...]]):
+    operand: tuple[object, ...]
 
-    def apply(self, property: Property[Any]) -> FilterClause:
+    def apply(self, property: Property[object]) -> FilterClause:
         return property.in_(self.operand)

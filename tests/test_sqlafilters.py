@@ -21,6 +21,8 @@ from sqlafilters import (
     Between,
     Contains,
     ContainsExact,
+    EndsWith,
+    EndsWithExact,
     Equals,
     Exists,
     Filter,
@@ -38,6 +40,7 @@ from sqlafilters import (
     Property,
     Related,
     StartsWith,
+    StartsWithExact,
 )
 
 
@@ -183,22 +186,25 @@ def test_equivalent_filters_used_as_cache_keys_retrieve_cached_values() -> None:
 
 
 @pytest.mark.parametrize(
-    ("predicate", "expected"),
+    ("property_", "predicate", "expected"),
     [
-        (Equals(5), [2, 5]),
-        (LessThan(5), [1, 4]),
-        (LessThanOrEqual(5), [1, 2, 4, 5]),
-        (GreaterThan(5), [3, 6]),
-        (GreaterThanOrEqual(5), [2, 3, 5, 6]),
-        (Between((1, 5)), [1, 2, 4, 5]),
-        (OneOf((1, 1, 10)), [1, 3]),
-        (Exists(), [1, 2, 3, 4, 5, 6]),
+        ("score", Equals(5), [2, 5]),
+        ("score", LessThan(5), [1, 4]),
+        ("score", LessThanOrEqual(5), [1, 2, 4, 5]),
+        ("score", GreaterThan(5), [3, 6]),
+        ("score", GreaterThanOrEqual(5), [2, 3, 5, 6]),
+        ("score", Between((1, 5)), [1, 2, 4, 5]),
+        ("score", OneOf((1, 1, 10)), [1, 3]),
+        ("score", Exists(), [1, 2, 3, 4, 5, 6]),
+        ("name", EndsWith("TA"), [2]),
+        ("name", StartsWithExact("GAM"), [3]),
+        ("name", EndsWithExact("%_"), [1]),
     ],
 )
 def test_parent_rows_filtered_by_scalar_predicates_return_expected_ids(
-    session: Session, predicate: Predicate[Any], expected: list[int]
+    session: Session, property_: str, predicate: Predicate[Any], expected: list[int]
 ) -> None:
-    assert ids(session, leaf("score", predicate)) == expected
+    assert ids(session, leaf(property_, predicate)) == expected
 
 
 def test_name_filtered_by_builtin_starts_with_returns_matching_parent_id(
