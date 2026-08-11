@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
-    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.orm import DeclarativeBase, InstrumentedAttribute
     from sqlalchemy.orm.relationships import RelationshipProperty
 
     from .filters import Filter, Match, Related
@@ -24,7 +24,7 @@ def _normal_property(model: type[DeclarativeBase], name: str) -> Property[Any]:
         )
 
     try:
-        return getattr(model, name)
+        return cast("Property[Any]", getattr(model, name))
     except Exception as error:
         raise FilterCompilationError(
             f"Unknown or unreadable property {name!r} on model {model.__name__}"
@@ -36,19 +36,20 @@ def _compile_match(
 ) -> FilterClause:
     try:
         property_ = _normal_property(model, match.property)
+        return match.using.apply(property_)
     except FilterCompilationError as original_error:
         if fallback is None:
             raise
 
         try:
-            property_ = fallback(model, match.property)
+            fallback_property = fallback(model, match.property)
         except Exception as error:
             raise error from original_error
 
-        if property_ is None:
+        if fallback_property is None:
             raise
 
-    return match.using.apply(property_)
+    return match.using.apply(fallback_property)
 
 
 def _relationship_for(
@@ -67,7 +68,7 @@ def _compile_related(
 ) -> FilterClause:
     relationship = _relationship_for(model, related.relationship)
     child_clause = _compile_filter(relationship.mapper.class_, related.where, fallback)
-    attribute = getattr(model, related.relationship)
+    attribute = cast("InstrumentedAttribute[Any]", getattr(model, related.relationship))
 
     return (
         attribute.any(child_clause)
@@ -99,7 +100,7 @@ class FilterableMixin:
     """Add immutable Filter compilation to a SQLAlchemy declarative model."""
 
     @classmethod
-    def as_filtered_by(
+    def as_filtered_by(  # type: ignore[misc]
         cls: type[DeclarativeBase], filter_: Filter, *, fallback: Fallback | None = None
     ) -> FilterClause:
         """Compile ``filter_`` into one SQLAlchemy Boolean where clause."""

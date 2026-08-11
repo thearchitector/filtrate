@@ -12,7 +12,8 @@ repos:
       - id: typecheck
         name: typecheck
         language: system
-        entry: uv run ty check . --fix
+        # entry: uv run ty check . --fix
+        entry: uv run mypy .
         types: [python]
         require_serial: true
         pass_filenames: false
