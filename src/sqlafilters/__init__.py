@@ -1,6 +1,6 @@
 from .exceptions import BadRelationshipError, FilterCompilationError, InvalidFilterError
 from .filters import Filter, Match, Related
-from .mixins import FilterableMixin
+from .mixins import Dynamic, FilterableMixin
 from .operators import (
     Between,
     Contains,
@@ -26,6 +26,7 @@ __all__ = (
     "Between",
     "Contains",
     "ContainsExact",
+    "Dynamic",
     "EndsWith",
     "EndsWithExact",
     "Equals",

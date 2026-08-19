@@ -34,9 +34,9 @@ A Queryable Property backed by a SQLAlchemy association proxy. Each Match agains
 **Related Filter**:
 A Filter evaluated against the target model of one named relationship and applied to the current model as one existential relationship condition.
 
-**Fallback Match Compiler**:
-A consumer-supplied recovery function that maps an active model and complete Match to a Boolean clause after normal property resolution fails, or returns no alternative.
-_Avoid_: Property factory, override
+**Dynamic Match Compiler**:
+A consumer-supplied function that maps an active model and complete Match to a Boolean clause before normal property resolution, or returns `None` to request normal resolution.
+_Avoid_: Property factory
 
 **Predicate**:
 The comparison or test a Match applies to a Queryable Property. A Predicate may be operandless or may carry an operand through an Operator.

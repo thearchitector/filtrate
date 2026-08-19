@@ -1,20 +1,24 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import and_, not_, or_
+from sqlalchemy.orm import DeclarativeBase
 
 from .exceptions import BadRelationshipError, FilterCompilationError
+from .filters import Filter, Match
+from .types import FilterClause
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from typing import Any
 
-    from sqlalchemy.orm import DeclarativeBase, InstrumentedAttribute
+    from sqlalchemy.orm import InstrumentedAttribute
     from sqlalchemy.orm.relationships import RelationshipProperty
 
-    from .filters import Filter, Match, Related
-    from .types import FilterClause, Property
+    from .filters import Related
+    from .types import Property
 
-    type Fallback = Callable[[type[DeclarativeBase], Match], FilterClause | None]
+
+type Dynamic = Callable[[type[DeclarativeBase], Match], FilterClause | None]
 
 
 def _normal_property(model: type[DeclarativeBase], name: str) -> Property[Any]:
@@ -32,24 +36,21 @@ def _normal_property(model: type[DeclarativeBase], name: str) -> Property[Any]:
 
 
 def _compile_match(
-    model: type[DeclarativeBase], match: Match, fallback: Fallback | None
+    model: type[DeclarativeBase], match: Match, dynamic: Dynamic | None
 ) -> FilterClause:
-    try:
-        property_ = _normal_property(model, match.property)
-        return match.using.apply(property_)
-    except FilterCompilationError as original_error:
-        if fallback is None:
-            raise
-
+    if dynamic is not None:
         try:
-            fallback_clause = fallback(model, match)
+            dynamic_clause = dynamic(model, match)
         except Exception as error:
-            raise error from original_error
+            raise FilterCompilationError(
+                f"Dynamic property {match.property!r} failed on model {model.__name__}"
+            ) from error
 
-        if fallback_clause is None:
-            raise
+        if dynamic_clause is not None:
+            return dynamic_clause
 
-        return fallback_clause
+    property_ = _normal_property(model, match.property)
+    return match.using.apply(property_)
 
 
 def _relationship_for(
@@ -64,10 +65,10 @@ def _relationship_for(
 
 
 def _compile_related(
-    model: type[DeclarativeBase], related: Related, fallback: Fallback | None
+    model: type[DeclarativeBase], related: Related, dynamic: Dynamic | None
 ) -> FilterClause:
     relationship = _relationship_for(model, related.relationship)
-    child_clause = _compile_filter(relationship.mapper.class_, related.where, fallback)
+    child_clause = _compile_filter(relationship.mapper.class_, related.where, dynamic)
     attribute = cast("InstrumentedAttribute[Any]", getattr(model, related.relationship))
 
     return (
@@ -78,20 +79,18 @@ def _compile_related(
 
 
 def _compile_filter(
-    model: type[DeclarativeBase], filter_: Filter, fallback: Fallback | None
+    model: type[DeclarativeBase], filter_: Filter, dynamic: Dynamic | None
 ) -> FilterClause:
     if filter_.via:
-        clause = _compile_related(model, filter_.via, fallback)
+        clause = _compile_related(model, filter_.via, dynamic)
     elif filter_.and_:
         clause = and_(
-            *(_compile_filter(model, child, fallback) for child in filter_.and_)
+            *(_compile_filter(model, child, dynamic) for child in filter_.and_)
         )
     elif filter_.or_:
-        clause = or_(
-            *(_compile_filter(model, child, fallback) for child in filter_.or_)
-        )
+        clause = or_(*(_compile_filter(model, child, dynamic) for child in filter_.or_))
     else:
-        clause = _compile_match(model, cast("Match", filter_.match), fallback)
+        clause = _compile_match(model, cast("Match", filter_.match), dynamic)
 
     return not_(clause) if filter_.negate else clause
 
@@ -101,8 +100,8 @@ class FilterableMixin:
 
     @classmethod
     def as_filtered_by(  # type: ignore[misc]
-        cls: type[DeclarativeBase], filter_: Filter, *, fallback: Fallback | None = None
+        cls: type[DeclarativeBase], filter_: Filter, *, dynamic: Dynamic | None = None
     ) -> FilterClause:
         """Compile ``filter_`` into one SQLAlchemy Boolean where clause."""
 
-        return _compile_filter(cls, filter_, fallback)
+        return _compile_filter(cls, filter_, dynamic)

@@ -30,7 +30,7 @@ The library builds SQLAlchemy expressions. It does not execute statements, own s
   into one SQLAlchemy where clause.
 - Support mapped scalar attributes, column properties, hybrid properties, direct column-targeted association proxies, and other SQLAlchemy `SQLCoreOperations` expressions.
 - Detect invalid properties and Related relationships during compilation.
-- Let consumers lazily recover from any property compilation failure by supplying a trusted fallback Match compiler.
+- Let consumers explicitly support dynamic properties with a trusted, model-aware Match compiler that runs before ORM attribute access.
 - Make Filter, Match, and built-in Predicate values immutable, hashable, and deterministic, and require the same behavior from custom Predicates.
 - Remain dialect-neutral to the extent enabled by SQLAlchemy's expression APIs.
 - Bias expression design toward common database performance practices without making execution-time guarantees.
@@ -62,7 +62,7 @@ Filter / Match / Related / Predicate tree
     ▼
 Recursive compiler inside FilterableMixin
     ├── compiles Matches against the active model
-    ├── lazily tries a model-aware fallback after a property failure
+    ├── gives a model-aware dynamic compiler first priority for Matches
     ├── compiles Related Filters through relationship.any() / .has()
     ├── combines child clauses with and_() / or_()
     └── negates each completed node whose negate flag is true
@@ -84,20 +84,22 @@ src/sqlafilters/
 ├── __init__.py       # supported public re-exports
 ├── exceptions.py     # InvalidFilterError, FilterCompilationError, BadRelationshipError
 ├── filters.py        # Filter, Match, and Related
-├── mixins.py         # FilterableMixin and private compilation helpers
+├── mixins.py         # Dynamic, FilterableMixin, and private compilation helpers
 ├── operators.py      # Predicate, Operator, and built-in implementations
 ├── types.py          # shared SQLAlchemy typing aliases
 └── py.typed
 ```
 
-The package root re-exports the supported API, including the `Property` typing alias, so normal consumer imports remain concise and fallback functions can use public annotations:
+The package root re-exports the supported API, including the `Dynamic` and `Property` typing aliases, so normal consumer imports remain concise:
 
 ```python
 from sqlafilters import (
     BadRelationshipError,
     Between,
     Contains,
+    Dynamic,
     Filter,
+    FilterClause,
     FilterableMixin,
     Match,
     Property,
@@ -245,7 +247,7 @@ For an ordinary scalar property, negated `Exists` is equivalent to `property.is_
 
 ### Proxied attributes
 
-A Proxied Attribute is a direct, column-targeted SQLAlchemy `association_proxy`. It is resolved under its model attribute name; a fallback may apply a Match to the same proxy while compiling another literal name. `ColumnAssociationProxyInstance` and ordinary mapped expressions both satisfy `SQLCoreOperations`, so `Property` requires no runtime descriptor inspection.
+A Proxied Attribute is a direct, column-targeted SQLAlchemy `association_proxy`. It is resolved under its model attribute name; a dynamic compiler may apply a Match to the same proxy while compiling another literal name. `ColumnAssociationProxyInstance` and ordinary mapped expressions both satisfy `SQLCoreOperations`, so `Property` requires no runtime descriptor inspection.
 
 Built-ins invoke comparison methods on the proxy itself. This lets SQLAlchemy correlate the related table and produce the appropriate existential expression. Chained and object-targeted association proxies remain SQLAlchemy- or custom-Predicate-defined behavior.
 
@@ -281,34 +283,30 @@ SQLAlchemy may implement case-insensitive containment with native `ILIKE` or a d
 
 ## Queryable property resolution
 
-Compilation first attempts a Match against the active mapped model. The active model is initially the class on which `as_filtered_by()` was called and changes to the target model while compiling `Related.where`:
+Compilation resolves every Match against an active mapped model. The active model is initially the class on which `as_filtered_by()` was called and changes to the target model while compiling `Related.where`.
+
+Consumers may pass the keyword-only `dynamic` argument, whose public type is `Dynamic = Callable[[type[DeclarativeBase], Match], FilterClause | None]`. For every Match, the compiler invokes `dynamic` first with the active model and complete, unmodified Match. A returned clause takes immediate precedence, including over a readable mapped property. Returning `None` requests ordinary ORM attribute resolution:
 
 1. Inspect the class as a SQLAlchemy mapped class.
 2. Reject the name if SQLAlchemy identifies it as a relationship property.
 3. Resolve the direct class attribute once with `getattr(cls, match.property)`.
 4. Pass the resolved value to `match.using.apply()`.
 
-Failure to resolve the attribute raises `FilterCompilationError`. SQLAlchemy mapper introspection is assumed to satisfy its documented contract. The resolved property is passed directly to `Predicate.apply()`, whose exceptions propagate unchanged. If `as_filtered_by()` has no fallback, a property-resolution error propagates immediately.
+Failure to resolve the attribute raises `FilterCompilationError`. SQLAlchemy mapper introspection is assumed to satisfy its documented contract. The resolved property is passed directly to `Predicate.apply()`, whose exceptions propagate unchanged.
 
-Consumers may instead pass a keyword-only `fallback` with type `Callable[[type[DeclarativeBase], Match], FilterClause | None] | None`. The fallback is a recovery path for every `FilterCompilationError` from normal property resolution, not only for an unknown name. It therefore may recover from a missing attribute, a Match that names a relationship, or a descriptor failure. The model property always receives the first attempt; a fallback cannot eagerly override one that resolves successfully.
+Dynamic results are trusted Boolean clauses and are returned without further Predicate application or nominal runtime checks. Results are not cached or shared between Matches. If the dynamic function raises, compilation stops immediately with a `FilterCompilationError`; the original exception is retained as its cause, and ordinary ORM resolution is not attempted. Dynamic logic is expected by convention to compile a given Match deterministically, though the library cannot enforce that contract.
 
-The fallback receives the active model and the complete, unmodified `Match`. Trusted fallback logic may apply the Predicate to an alias or calculated property, or compile an arbitrary Boolean clause such as a correlated relationship `EXISTS`. The consumer owns all such semantics.
+There is intentionally no allowlist of individual mapped fields or nominal descriptor classes. `Property` publicly names SQLAlchemy's common `SQLCoreOperations` behavior for static typing, but the resolver does not enforce a separate runtime class check. This admits mapped scalar attributes, `column_property` values, class-level hybrid expressions, direct column-targeted association proxies, and compatible extension descriptors. Dynamic functions may compile those same properties or broader Boolean expressions.
 
-Every Match tries normal property resolution first. After that attempt fails, the compiler invokes the fallback directly for that Match. Fallback results are not cached or shared between Matches. Returning `None` re-raises the original `FilterCompilationError`.
-
-Fallback results are trusted Boolean clauses and are returned without further Predicate application or nominal runtime checks. If the fallback raises, its exception propagates with the original `FilterCompilationError` as its cause. Fallback logic is expected by convention to compile a given Match deterministically, though the library cannot enforce that contract.
-
-There is intentionally no allowlist of individual mapped fields or nominal descriptor classes. `Property` publicly names SQLAlchemy's common `SQLCoreOperations` behavior for static typing, but the resolver does not enforce a separate runtime class check. This admits mapped scalar attributes, `column_property` values, class-level hybrid expressions, direct column-targeted association proxies, and compatible extension descriptors. Fallbacks may compile those same properties or broader Boolean expressions.
-
-This boundary allows a Proxied Attribute, hybrid property, compatible extension descriptor, fallback, or custom Predicate to produce an `EXISTS` subquery or another Boolean expression. SQLAlchemy or consumer code owns those property-level semantics; the compiler neither parses an implicit relationship path nor adds a join.
+This boundary allows a Proxied Attribute, hybrid property, compatible extension descriptor, dynamic function, or custom Predicate to produce an `EXISTS` subquery or another Boolean expression. SQLAlchemy or consumer code owns those property-level semantics; the compiler neither parses an implicit relationship path nor adds a join.
 
 ## Related filter resolution
 
 Compilation resolves `Filter.via` separately from Match property resolution:
 
 1. Inspect the active model as a SQLAlchemy mapped class.
-2. Resolve `Related.relationship` as one direct mapped relationship; fallback is never consulted for it.
-3. Obtain the relationship's target mapped model and compile `Related.where` against that model, using the same model-aware fallback.
+2. Resolve `Related.relationship` as one direct mapped relationship; `dynamic` is never consulted for the relationship boundary.
+3. Obtain the relationship's target mapped model and compile `Related.where` against that model, using the same model-aware dynamic function.
 4. Apply the compiled child expression through `.any()` when the relationship has `uselist=True`, or `.has()` when it has `uselist=False`.
 
 An invalid relationship name or non-relationship attribute raises `BadRelationshipError`. Mapper target resolution and construction of the appropriate `.any()` or `.has()` expression rely directly on SQLAlchemy's documented relationship behavior. An error from within `Related.where` propagates unchanged and identifies its active target model; it is not wrapped with a relationship path.
@@ -323,35 +321,29 @@ Conceptually, compilation performs the following sequence:
 def _compile_match(
     model: type[DeclarativeBase],
     match: Match,
-    fallback: Callable[[type[DeclarativeBase], Match], FilterClause | None] | None,
+    dynamic: Dynamic | None,
 ) -> FilterClause:
-    try:
-        property_ = resolve_property(model, match.property)
-    except FilterCompilationError as original:
-        if fallback is None:
-            raise
-    else:
-        return match.using.apply(property_)
+    if dynamic is not None:
+        try:
+            clause = dynamic(model, match)
+        except Exception as error:
+            raise FilterCompilationError(...) from error
 
-    try:
-        clause = fallback(model, match)
-    except Exception as invalid:
-        raise invalid from original
+        if clause is not None:
+            return clause
 
-    if clause is None:
-        raise original
-
-    return clause
+    property_ = resolve_property(model, match.property)
+    return match.using.apply(property_)
 
 
 def _compile_related(
     model: type[DeclarativeBase],
     related: Related,
-    fallback: Callable[[type[DeclarativeBase], Match], FilterClause | None] | None,
+    dynamic: Dynamic | None,
 ) -> FilterClause:
     relationship = resolve_relationship(model, related.relationship)
     target_model = relationship.mapper.class_
-    child_clause = _compile_filter(target_model, related.where, fallback)
+    child_clause = _compile_filter(target_model, related.where, dynamic)
 
     if relationship.uselist:
         return getattr(model, related.relationship).any(child_clause)
@@ -361,18 +353,18 @@ def _compile_related(
 def _compile_filter(
     model: type[DeclarativeBase],
     filter_: Filter,
-    fallback: Callable[[type[DeclarativeBase], Match], FilterClause | None] | None,
+    dynamic: Dynamic | None,
 ) -> FilterClause:
     if filter_.match is not None:
-        clause = _compile_match(model, filter_.match, fallback)
+        clause = _compile_match(model, filter_.match, dynamic)
     elif filter_.and_ is not None:
         clause = and_(
-            *(_compile_filter(model, child, fallback) for child in filter_.and_)
+            *(_compile_filter(model, child, dynamic) for child in filter_.and_)
         )
     elif filter_.or_ is not None:
-        clause = or_(*(_compile_filter(model, child, fallback) for child in filter_.or_))
+        clause = or_(*(_compile_filter(model, child, dynamic) for child in filter_.or_))
     else:
-        clause = _compile_related(model, filter_.via, fallback)
+        clause = _compile_related(model, filter_.via, dynamic)
 
     return not_(clause) if filter_.negate else clause
 ```
@@ -392,9 +384,7 @@ class FilterableMixin:
         cls,
         filter_: Filter,
         *,
-        fallback: (
-            Callable[[type[DeclarativeBase], Match], FilterClause | None] | None
-        ) = None,
+        dynamic: Dynamic | None = None,
     ) -> FilterClause: ...
 ```
 
@@ -434,7 +424,7 @@ No other public exception subclasses are defined.
 
 Property-resolution errors identify the active model and literal property name. Predicate applications are direct calls, and their exceptions propagate unchanged.
 
-Without a fallback, a recursive call lets the first property-resolution `FilterCompilationError` propagate unchanged. With a fallback, returning `None` re-raises that original error, while an exception raised by the fallback propagates from it. Recovery is attempted once, and a returned fallback clause is used directly.
+Without a dynamic function, a recursive call lets the first property-resolution `FilterCompilationError` propagate unchanged. With one, every Match invokes it before property resolution. Returning `None` continues with normal resolution; a returned clause is used directly. An exception from the dynamic function stops immediately and is wrapped in `FilterCompilationError` with the original exception as its cause.
 
 `BadRelationshipError` identifies the active model and literal relationship name for invalid Related relationship resolution. Property and Predicate failures inside `Related.where` retain their original subtype and identify the active target model; the compiler does not add relationship-path wrappers.
 
@@ -460,7 +450,7 @@ Related Filters and Proxied Attributes commonly render correlated `EXISTS` expre
 
 - During normal resolution, property and relationship names are used only for direct Python attribute lookup and are never interpolated into SQL text by the library.
 - Built-ins use SQLAlchemy expression methods so operands remain bound values.
-- A fallback is trusted library-consumer code. It receives the active model and complete Match and may construct arbitrary SQLAlchemy Boolean expressions; it can weaken the guarantees provided by normal property resolution.
+- A dynamic function is trusted library-consumer code. It receives the active model and complete Match and may construct arbitrary SQLAlchemy Boolean expressions; it can weaken the guarantees provided by normal property resolution.
 - A custom Predicate is trusted library-consumer code and can weaken these guarantees if it emits raw SQL.
 - The library does not authorize which mapped properties or relationships a caller may filter. Consumers exposing Filters to less-trusted callers must enforce their own property and relationship policy.
 - The library imposes no recursion, relationship-depth, width, Match-count, or subquery-count limits. Consumers translating untrusted data must enforce limits before constructing a Filter.
@@ -489,19 +479,18 @@ Tests are behavior-focused and execute against an in-memory SQLite database. The
 
 - deeply nested AND/OR trees return the expected rows;
 - mapped scalar attributes, column properties, and hybrid properties work;
-- without a fallback, unknown attributes, relationships, and every other normal property failure propagate as `FilterCompilationError` immediately;
-- a fallback is invoked lazily after missing, relational, and descriptor resolution failures;
-- a fallback receives the active model and complete Match and may return any usable Boolean clause, including one built from a custom property or relationship scope;
-- a `None` fallback result re-raises the original `FilterCompilationError`;
-- fallback exceptions propagate from the original normal-resolution error, while Predicate exceptions propagate unchanged;
-- repeated failed Matches invoke fallback independently;
+- a dynamic function is called before normal ORM property access and may override an existing property;
+- a dynamic function receives the active model and complete Match and may return any usable Boolean clause, including one built from a custom property or relationship scope;
+- a `None` dynamic result continues with normal property resolution;
+- dynamic exceptions stop immediately as `FilterCompilationError`, retaining the original exception as their cause, while Predicate exceptions propagate unchanged;
+- repeated Matches invoke the dynamic function independently;
 - collection Related Filters use existential semantics and scalar Related Filters use scalar-reference semantics;
 - negating a completed Related Filter differs from negating its inner `where`, including for empty collections and missing scalar relationships;
 - one Related Filter binds an AND subtree to the same related row, while sibling Related Filters may match different rows;
 - nested Related Filters support multiple explicit relationship hops;
 - unknown and non-relationship `Related.relationship` names raise `BadRelationshipError`;
 - errors inside `Related.where` retain their original subtype and identify the active target model;
-- fallback works inside `Related.where` and receives that target model;
+- dynamic works inside `Related.where` and receives that target model;
 - direct column-targeted Proxied Attributes work with built-in operations supported by SQLAlchemy;
 - separate collection-valued Proxied Attribute Matches remain independent existential tests;
 - on Proxied Attributes, `Exists` is true for at least one non-null value and negating its Filter is the complement, including for empty, all-null, and mixed collections;
@@ -520,8 +509,8 @@ SQLite is the executable behavioral reference for version 0.1. Dialect neutralit
 5. Implement direct `Between`, containment, and `OneOf` delegation.
 6. Implement private property and direct relationship resolution, including `BadRelationshipError` translation.
 7. Implement recursive Match, AND, OR, and Related compilation, including node-level negation, through `_compile_filter()`.
-8. Add the behavior-only `FilterableMixin` public entry point with its model-aware fallback recovery path.
-9. Re-export the supported API, including `Predicate`, `Operator`, `Property`, `FilterClause`, `Related`, and `BadRelationshipError`, from `sqlafilters.__init__`.
+8. Add the behavior-only `FilterableMixin` public entry point with its model-aware dynamic Match compiler.
+9. Re-export the supported API, including `Dynamic`, `Predicate`, `Operator`, `Property`, `FilterClause`, `Related`, and `BadRelationshipError`, from `sqlafilters.__init__`.
 10. Remove the placeholder function and Pydantic dependency.
 11. Complete SQLite-backed behavioral coverage for nested trees, Related Filters, Proxied Attributes, custom Predicates, and failures.
 12. Update user-facing examples and API documentation to match the implemented contract.

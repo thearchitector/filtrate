@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -30,6 +30,7 @@ from sqlafilters import (
     Between,
     Contains,
     ContainsExact,
+    Dynamic,
     EndsWith,
     EndsWithExact,
     Equals,
@@ -168,13 +169,9 @@ def leaf(property_: str, using: Predicate[Any], *, negate: bool = False) -> Filt
 
 
 def ids(
-    session: Session,
-    filter_: Filter,
-    *,
-    fallback: Callable[[type[DeclarativeBase], Match], FilterClause | None]
-    | None = None,
+    session: Session, filter_: Filter, *, dynamic: Dynamic | None = None
 ) -> list[int]:
-    clause = Parent.as_filtered_by(filter_, fallback=fallback)
+    clause = Parent.as_filtered_by(filter_, dynamic=dynamic)
     return list(session.scalars(select(Parent.id).where(clause).order_by(Parent.id)))
 
 
@@ -278,39 +275,54 @@ def test_root_and_nested_groups_with_negate_true_return_complementary_parent_ids
     assert ids(session, nested) == [2, 4, 5, 6]
 
 
-def test_existing_property_with_fallback_returns_existing_property_matches(
-    session: Session,
-) -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
-        raise AssertionError("fallback must not replace a readable property")
+def test_dynamic_can_override_existing_property(session: Session) -> None:
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        if model is Parent and match.property == "name":
+            return match.using.apply(Parent.score)
+        return None
 
-    assert ids(session, leaf("name", Equals("beta")), fallback=fallback) == [2]
+    assert ids(session, leaf("name", Equals(5)), dynamic=dynamic) == [2, 5]
+
+
+def test_declining_dynamic_uses_existing_property(session: Session) -> None:
+    calls: list[tuple[type[DeclarativeBase], Match]] = []
+
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        calls.append((model, match))
+        return None
+
+    filter_ = leaf("name", Equals("beta"))
+    assert ids(session, filter_, dynamic=dynamic) == [2]
+    assert calls == [(Parent, filter_.match)]
 
 
 @pytest.mark.parametrize("name", ["missing", "children", "broken"])
-def test_missing_or_unusable_properties_with_fallback_return_fallback_matches(
+def test_missing_or_unusable_properties_with_dynamic_return_dynamic_matches(
     session: Session, name: str
 ) -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         if model is Parent and match.property == name:
             return match.using.apply(Parent.score)
         return None
 
-    assert ids(session, leaf(name, Equals(5)), fallback=fallback) == [2, 5]
+    assert ids(session, leaf(name, Equals(5)), dynamic=dynamic) == [2, 5]
 
 
-def test_unknown_property_with_declining_fallback_raises_compilation_error() -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+@pytest.mark.parametrize("name", ["missing", "children", "broken"])
+def test_unusable_property_with_declining_dynamic_raises_compilation_error(
+    name: str,
+) -> None:
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         return None
 
-    with pytest.raises(FilterCompilationError, match="missing"):
-        Parent.as_filtered_by(leaf("missing", Equals(1)), fallback=fallback)
+    with pytest.raises(FilterCompilationError, match=name):
+        Parent.as_filtered_by(leaf(name, Equals(1)), dynamic=dynamic)
 
 
-def test_repeated_fallback_match_in_and_group_returns_matching_parent_ids(
+def test_repeated_dynamic_match_in_and_group_returns_matching_parent_ids(
     session: Session,
 ) -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         if model is Parent and match.property == "alias":
             return match.using.apply(Parent.score)
         return None
@@ -318,21 +330,25 @@ def test_repeated_fallback_match_in_and_group_returns_matching_parent_ids(
     duplicated = Filter(
         and_=(leaf("alias", GreaterThan(0)), leaf("alias", LessThan(3)))
     )
-    assert ids(session, duplicated, fallback=fallback) == [1]
+    assert ids(session, duplicated, dynamic=dynamic) == [1]
 
 
-def test_unknown_property_with_raising_fallback_propagates_fallback_error() -> None:
+def test_raising_dynamic_immediately_raises_compilation_error() -> None:
     def exploding(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
-        raise RuntimeError("fallback exploded")
+        raise RuntimeError("dynamic exploded")
 
-    with pytest.raises(RuntimeError, match="fallback exploded"):
-        Parent.as_filtered_by(leaf("missing", Equals(1)), fallback=exploding)
+    with pytest.raises(FilterCompilationError, match=r"name.*Parent") as exc_info:
+        Parent.as_filtered_by(leaf("name", Equals("beta")), dynamic=exploding)
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
-def test_fallback_can_compile_dynamic_child_fields_against_the_same_row(
+def test_dynamic_can_compile_child_fields_against_the_same_row(
     session: Session,
 ) -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+    def dynamic_fields(
+        model: type[DeclarativeBase], match: Match
+    ) -> FilterClause | None:
         if model is not Parent:
             return None
 
@@ -340,10 +356,10 @@ def test_fallback_can_compile_dynamic_child_fields_against_the_same_row(
             and_(Child.field == match.property, match.using.apply(Child.value))
         )
 
-    dynamic = leaf("foo", Contains("hi"))
-    assert ids(session, dynamic, fallback=fallback) == [2]
+    dynamic_filter = leaf("foo", Contains("hi"))
+    assert ids(session, dynamic_filter, dynamic=dynamic_fields) == [2]
     assert ids(
-        session, Filter(match=dynamic.match, negate=True), fallback=fallback
+        session, Filter(match=dynamic_filter.match, negate=True), dynamic=dynamic_fields
     ) == [1, 3, 4, 5, 6]
 
 
@@ -411,16 +427,16 @@ def test_related_filters_nested_across_two_hops_return_matching_parent_ids(
     assert ids(session, nested) == [1]
 
 
-def test_related_match_with_target_model_fallback_returns_matching_parent_ids(
+def test_related_match_with_target_model_dynamic_returns_matching_parent_ids(
     session: Session,
 ) -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
         if model is Child and match.property == "shade":
             return match.using.apply(Child.color)
         return None
 
     clause = related("children", leaf("shade", Equals("blue")))
-    assert ids(session, clause, fallback=fallback) == [1]
+    assert ids(session, clause, dynamic=dynamic) == [1]
 
 
 def test_missing_or_non_relationship_names_used_as_related_raise_relationship_error() -> (
@@ -438,13 +454,13 @@ def test_unknown_nested_property_used_in_related_filter_raises_compilation_error
         Parent.as_filtered_by(related("children", leaf("missing", Equals(1))))
 
 
-def test_invalid_relationship_with_match_fallback_raises_relationship_error() -> None:
-    def fallback(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
-        raise AssertionError("fallback is only for Match properties")
+def test_invalid_relationship_does_not_invoke_dynamic() -> None:
+    def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+        raise AssertionError("dynamic is only for Match properties")
 
     with pytest.raises(BadRelationshipError):
         Parent.as_filtered_by(
-            related("missing", leaf("id", Equals(1))), fallback=fallback
+            related("missing", leaf("id", Equals(1))), dynamic=dynamic
         )
 
 

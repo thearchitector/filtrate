@@ -81,10 +81,11 @@ Direct column-targeted association proxies work like ordinary properties:
 filter_ = Filter(match=Match(property="tag_names", using=Equals("python")))
 ```
 
-## Fallback matches
+## Dynamic matches
 
-When normal property resolution fails, `fallback` receives the active model and
-the complete `Match`, and returns a Boolean clause. A computed property is one line:
+Pass `dynamic` when a model supports names that are not ordinary ORM attributes. It
+receives the active model and complete `Match` before ORM attribute resolution, and
+returns either a Boolean clause or `None`. A computed property is one line:
 
 ```python
 from sqlalchemy import func
@@ -92,7 +93,7 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlafilters import Contains, FilterClause
 
 
-def fallback(
+def dynamic(
     model: type[DeclarativeBase], match: Match
 ) -> FilterClause | None:
     if model is User and match.property == "email_domain":
@@ -102,7 +103,7 @@ def fallback(
 
 
 filter_ = Filter(match=Match(property="email_domain", using=Contains("example")))
-clause = User.as_filtered_by(filter_, fallback=fallback)
+clause = User.as_filtered_by(filter_, dynamic=dynamic)
 ```
 
 The same hook can compile dynamic key/value children. Given `Parent.children` and
@@ -127,12 +128,13 @@ def child_fields(
 
 
 filter_ = Filter(match=Match(property="foo", using=Contains("hi")))
-clause = Parent.as_filtered_by(filter_, fallback=child_fields)
+clause = Parent.as_filtered_by(filter_, dynamic=child_fields)
 ```
 
 This produces one correlated `EXISTS`, so `field == "foo"` and the value predicate
-must match the same child. Readable mapped properties always win; returning `None`
-preserves the original `FilterCompilationError`.
+must match the same child. A returned clause takes precedence over mapped properties;
+returning `None` asks the compiler to try ordinary ORM attribute access instead. If
+the dynamic function raises, compilation stops with `FilterCompilationError`.
 
 ## Predicates
 
@@ -165,9 +167,9 @@ class IsDivisibleBy(Operator[int]):
 ## Errors and safety
 
 Unknown properties raise `FilterCompilationError`; invalid `Related` names raise
-`BadRelationshipError`. Predicate errors propagate unchanged, while fallback errors
-are chained from the original property-resolution error.
+`BadRelationshipError`. Predicate errors propagate unchanged. Exceptions from a
+dynamic function are translated to `FilterCompilationError` and retained as its cause.
 
-Treat custom Predicates and fallbacks as trusted SQL construction. Applications
+Treat custom Predicates and dynamic functions as trusted SQL construction. Applications
 accepting untrusted filters should allowlist properties and relationships and bound
 tree depth, width, and match count.
