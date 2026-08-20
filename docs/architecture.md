@@ -82,7 +82,7 @@ The compiler accepts a concrete mapped subclass of `DeclarativeBase` at that ent
 ```text
 src/sqlafilters/
 ├── __init__.py       # supported public re-exports
-├── capabilities.py   # Operator Capabilities and SQLAlchemy type classification
+├── capabilities.py   # Operator Capability declarations and validation
 ├── exceptions.py     # InvalidFilterError, FilterCompilationError, BadRelationshipError
 ├── filters.py        # Filter, Match, and Related
 ├── mixins.py         # Dynamic, FilterableMixin, and private compilation helpers
@@ -239,18 +239,19 @@ Keyword arguments remain available when they improve clarity, but are never requ
 
 ### Operator Capabilities
 
-`TEXT_SEARCH` and `ORDERING` are runtime Operator Capabilities used by the built-in
-restricted Predicates. String types and their standard variants receive
-`TEXT_SEARCH`. Integer types, including `SmallInteger` and `BigInteger`, plus numeric,
-floating, date, time, and datetime types receive `ORDERING`. Boolean, binary, JSON,
-UUID, plain SQLAlchemy `Enum`, and unknown types receive neither capability. Equality,
-membership, and presence remain unrestricted.
+`TEXTUAL` and `ORDERED` are runtime Operator Capabilities used by the built-in
+restricted Predicates. The library registers `TEXTUAL` on SQLAlchemy's `String` class
+and `ORDERED` on its `Integer`, `Numeric`, `Date`, `DateTime`, and `Time` classes.
+Standard variants such as `Text`, `BigInteger`, `Float`, and `DECIMAL` inherit their
+family declaration. Boolean, binary, JSON, UUID, and unknown types receive neither
+capability. Equality, membership, and presence remain unrestricted.
 
-These defaults are registered as the same private class metadata used by custom
-types. Standard variants inherit the declaration from their SQLAlchemy type-family
-base. `Enum` and `TypeDecorator` carry explicit empty declarations so they do not
-inherit capabilities from a broader family, and runtime lookup is one metadata read
-regardless of whether the type is built in or consumer defined.
+Built-in and consumer-defined types use the same private class metadata. Runtime
+lookup reads that metadata from the concrete SQLAlchemy type class, so normal Python
+inheritance supplies family capabilities without a classifier or resolver registry.
+SQLAlchemy `Enum` is the deliberate exception: because it subclasses `String` but
+native enums do not have portable text-operator semantics, the library registers an
+empty replacement declaration on `Enum`.
 
 Every `TypeDecorator` is opaque, including one whose `impl` or `python_type` resembles
 a supported built-in. Its class must opt in explicitly:
@@ -261,24 +262,28 @@ from sqlalchemy.types import TypeDecorator
 from sqlafilters import Capability, filter_capabilities
 
 
-@filter_capabilities(Capability.TEXT_SEARCH)
+@filter_capabilities(Capability.TEXTUAL)
 class SearchableCode(TypeDecorator[str]):
     impl = String
     cache_ok = True
 ```
 
-`filter_capabilities` accepts one or more enum values and returns the same class.
-Stacked declarations and declarations inherited from a decorated base class are
-additive. The private class metadata is intentionally not a consumer API; there is no
-global resolver registry or public lookup helper.
+`filter_capabilities` accepts Capability values, decorates any `TypeEngine` subclass,
+and returns the same class. Stacked declarations and declarations inherited from a
+base class are additive by default. `replace=True` stores exactly the supplied set
+instead, allowing an inherited declaration to be narrowed or cleared. This also lets
+a custom native-enum subclass opt back into `TEXTUAL`, but only when that subclass
+implements portable text comparison semantics itself. The private class metadata is
+intentionally not a consumer API; there is no global resolver registry or public
+lookup helper.
 
 At runtime, capability lookup reads the expression's SQLAlchemy `type`, falling back
 through `remote_attr` for a Proxied Attribute. Beartype functional validators enforce
-`TEXT_SEARCH` on containment Predicates and `ORDERING` on ordered comparisons and
+`TEXTUAL` on containment Predicates and `ORDERED` on ordered comparisons and
 `Between`; applying a restricted Predicate to an unsupported property raises
 `InvalidFilterError` before SQL construction. A declaration records supported SQL
 semantics but neither introduces a cast nor guarantees database-specific behavior.
-See [ADR 0007](adr/0007-declare-operator-capabilities-on-type-decorators.md).
+See [ADR 0007](adr/0007-register-operator-capabilities-on-sqlalchemy-type-classes.md).
 
 ### Null policy
 

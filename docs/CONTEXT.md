@@ -47,7 +47,7 @@ An operand-bearing Predicate.
 _Avoid_: Operation
 
 **Operator Capability**:
-A declared SQL operator family that a Queryable Property's SQLAlchemy type supports. Built-in types receive conservative defaults; a custom `TypeDecorator` declares its capabilities explicitly.
+A SQL operator family that a Queryable Property is declared to support, independently of its Python value type.
 _Avoid_: Python type compatibility, cast
 
 **Exists**:

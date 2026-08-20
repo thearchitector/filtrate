@@ -149,28 +149,6 @@ Text predicates escape `%` and `_`. The default variants are case-insensitive;
 `Exact` variants use SQLAlchemy's case-sensitive operations. Negate a containing
 `Filter` instead of using separate not-equal or not-exists predicates.
 
-Text and ordered predicates validate the SQLAlchemy type before constructing SQL.
-Standard string types support text search; integer, numeric, date, time, and datetime
-types support ordering. A custom `TypeDecorator` is opaque and must declare the SQL
-operator families it supports:
-
-```python
-from sqlalchemy import String
-from sqlalchemy.types import TypeDecorator
-from sqlafilters import Capability, filter_capabilities
-
-
-@filter_capabilities(Capability.TEXT_SEARCH)
-class CaseFoldedText(TypeDecorator[str]):
-    impl = String
-    cache_ok = True
-```
-
-Declarations may contain multiple capabilities, may be stacked, and are inherited
-additively. They describe supported SQL semantics only; they do not add casts or
-infer behavior from `impl` or `python_type`. Applying an unsupported restricted
-predicate raises `InvalidFilterError`.
-
 Custom Predicates implement `apply`:
 
 ```python
@@ -185,6 +163,41 @@ class IsDivisibleBy(Operator[int]):
     def apply(self, property: Property[int]) -> FilterClause:
         return property % self.operand == 0
 ```
+
+## Predicate Capabilities
+
+Text and ordered predicates validate the SQLAlchemy type before constructing SQL.
+Standard string types support text search; integer, numeric, date, time, and datetime
+types support ordering. These families are represented by `Capability.TEXTUAL` and
+`Capability.ORDERED`. Plain SQLAlchemy `Enum` and unknown types receive neither
+capability, while equality, membership, and presence predicates remain unrestricted.
+
+A custom `TypeDecorator` is opaque even when its `impl` is a registered built-in. It
+must declare the SQL operator families it actually supports:
+
+```python
+from sqlalchemy import String
+from sqlalchemy.types import TypeDecorator
+from sqlafilters import Capability, filter_capabilities
+
+
+@filter_capabilities(Capability.TEXTUAL)
+class CaseFoldedText(TypeDecorator[str]):
+    impl = String
+    cache_ok = True
+```
+
+`filter_capabilities` decorates any `TypeEngine` subclass and returns that class
+unchanged. Declarations may contain multiple capabilities, may be stacked, and are
+inherited additively. Pass `replace=True` to replace rather than extend inherited
+capabilities, including with an empty declaration.
+
+SQLAlchemy `Enum` deliberately has no text capability because native enum behavior
+varies by dialect. A custom native-enum subclass may declare `TEXTUAL` after it
+implements portable text comparison semantics itself. A declaration only enables
+validation: it does not add casts, inspect `impl` or `python_type`, or guarantee
+database-specific behavior. Applying an unsupported restricted predicate raises
+`InvalidFilterError`.
 
 ## Errors and safety
 
