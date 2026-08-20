@@ -62,10 +62,11 @@ _register_ordered(Time)
 
 
 def IsCapable(*capabilities: Capability) -> BeartypeValidator:
+    caps = frozenset(capabilities)
     type_validator = IsAttr[
         "type",
         Is[
-            lambda ptype: set(capabilities).issubset(
+            lambda ptype: caps.issubset(
                 getattr(type(ptype), _CAPABILITIES_ATTRIBUTE, _DEFAULT_CAPABILITIES)
             )
         ],
