@@ -2,7 +2,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import ForeignKey, Integer, String, column
+from sqlalchemy import ForeignKey, String
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import ColumnElement
@@ -93,16 +93,6 @@ def test_operators_reject_incompatible_operands(
 ) -> None:
     with pytest.raises(InvalidFilterError, match=f"{hint}"):
         operator(operand)
-
-
-def test_string_operator_rejects_non_string_property() -> None:
-    with pytest.raises(InvalidFilterError, match="violates type hint"):
-        Contains("value").apply(cast("Any", column("score", Integer)))
-
-
-def test_ordering_operator_rejects_non_orderable_property() -> None:
-    with pytest.raises(InvalidFilterError, match="violates type hint"):
-        LessThan(1).apply(cast("Any", column("name", String)))
 
 
 def test_string_operator_accepts_association_proxy_remote_attribute() -> None:

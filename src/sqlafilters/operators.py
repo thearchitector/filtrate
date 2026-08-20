@@ -4,12 +4,13 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, TypeVar, dataclass_transform
 
-from .types import FilterClause, IsType, Property, beartype
+from .capabilities import Capability, IsCapable
+from .types import FilterClause, Property, beartype
 
 Orderable = TypeVar("Orderable", int, float, Decimal, date, time, datetime, timedelta)
 
-OrderableProperty = Annotated[Property[Orderable], IsType(*Orderable.__constraints__)]
-StrProperty = Annotated[Property[str], IsType(str)]
+OrderableProperty = Annotated[Property[Orderable], IsCapable(Capability.ORDERED)]
+StrProperty = Annotated[Property[str], IsCapable(Capability.TEXTUAL)]
 
 
 class Predicate[T](ABC):

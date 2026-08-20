@@ -46,6 +46,10 @@ _Avoid_: RawOperator, comparator
 An operand-bearing Predicate.
 _Avoid_: Operation
 
+**Operator Capability**:
+A declared SQL operator family that a Queryable Property's SQLAlchemy type supports. Built-in types receive conservative defaults; a custom `TypeDecorator` declares its capabilities explicitly.
+_Avoid_: Python type compatibility, cast
+
 **Exists**:
 A Predicate that tests whether a Queryable Property has at least one non-null value. Its domain meaning is presence, regardless of the SQL construct used to express it.
 _Avoid_: IsNotNull

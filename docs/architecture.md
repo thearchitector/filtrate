@@ -82,6 +82,7 @@ The compiler accepts a concrete mapped subclass of `DeclarativeBase` at that ent
 ```text
 src/sqlafilters/
 ├── __init__.py       # supported public re-exports
+├── capabilities.py   # Operator Capabilities and SQLAlchemy type classification
 ├── exceptions.py     # InvalidFilterError, FilterCompilationError, BadRelationshipError
 ├── filters.py        # Filter, Match, and Related
 ├── mixins.py         # Dynamic, FilterableMixin, and private compilation helpers
@@ -96,6 +97,7 @@ The package root re-exports the supported API, including the `Dynamic` and `Prop
 from sqlafilters import (
     BadRelationshipError,
     Between,
+    Capability,
     Contains,
     Dynamic,
     Filter,
@@ -104,6 +106,7 @@ from sqlafilters import (
     Match,
     Property,
     Related,
+    filter_capabilities,
 )
 ```
 
@@ -233,6 +236,49 @@ Keyword arguments remain available when they improve clarity, but are never requ
 | `Contains` | `operand` | case-insensitive literal substring containment |
 | `ContainsExact` | `operand` | case-sensitive literal substring containment |
 | `OneOf` | `operand` tuple | property equals one member |
+
+### Operator Capabilities
+
+`TEXT_SEARCH` and `ORDERING` are runtime Operator Capabilities used by the built-in
+restricted Predicates. String types and their standard variants receive
+`TEXT_SEARCH`. Integer types, including `SmallInteger` and `BigInteger`, plus numeric,
+floating, date, time, and datetime types receive `ORDERING`. Boolean, binary, JSON,
+UUID, plain SQLAlchemy `Enum`, and unknown types receive neither capability. Equality,
+membership, and presence remain unrestricted.
+
+These defaults are registered as the same private class metadata used by custom
+types. Standard variants inherit the declaration from their SQLAlchemy type-family
+base. `Enum` and `TypeDecorator` carry explicit empty declarations so they do not
+inherit capabilities from a broader family, and runtime lookup is one metadata read
+regardless of whether the type is built in or consumer defined.
+
+Every `TypeDecorator` is opaque, including one whose `impl` or `python_type` resembles
+a supported built-in. Its class must opt in explicitly:
+
+```python
+from sqlalchemy import String
+from sqlalchemy.types import TypeDecorator
+from sqlafilters import Capability, filter_capabilities
+
+
+@filter_capabilities(Capability.TEXT_SEARCH)
+class SearchableCode(TypeDecorator[str]):
+    impl = String
+    cache_ok = True
+```
+
+`filter_capabilities` accepts one or more enum values and returns the same class.
+Stacked declarations and declarations inherited from a decorated base class are
+additive. The private class metadata is intentionally not a consumer API; there is no
+global resolver registry or public lookup helper.
+
+At runtime, capability lookup reads the expression's SQLAlchemy `type`, falling back
+through `remote_attr` for a Proxied Attribute. Beartype functional validators enforce
+`TEXT_SEARCH` on containment Predicates and `ORDERING` on ordered comparisons and
+`Between`; applying a restricted Predicate to an unsupported property raises
+`InvalidFilterError` before SQL construction. A declaration records supported SQL
+semantics but neither introduces a cast nor guarantees database-specific behavior.
+See [ADR 0007](adr/0007-declare-operator-capabilities-on-type-decorators.md).
 
 ### Null policy
 

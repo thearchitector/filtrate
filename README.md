@@ -149,6 +149,28 @@ Text predicates escape `%` and `_`. The default variants are case-insensitive;
 `Exact` variants use SQLAlchemy's case-sensitive operations. Negate a containing
 `Filter` instead of using separate not-equal or not-exists predicates.
 
+Text and ordered predicates validate the SQLAlchemy type before constructing SQL.
+Standard string types support text search; integer, numeric, date, time, and datetime
+types support ordering. A custom `TypeDecorator` is opaque and must declare the SQL
+operator families it supports:
+
+```python
+from sqlalchemy import String
+from sqlalchemy.types import TypeDecorator
+from sqlafilters import Capability, filter_capabilities
+
+
+@filter_capabilities(Capability.TEXT_SEARCH)
+class CaseFoldedText(TypeDecorator[str]):
+    impl = String
+    cache_ok = True
+```
+
+Declarations may contain multiple capabilities, may be stacked, and are inherited
+additively. They describe supported SQL semantics only; they do not add casts or
+infer behavior from `impl` or `python_type`. Applying an unsupported restricted
+predicate raises `InvalidFilterError`.
+
 Custom Predicates implement `apply`:
 
 ```python

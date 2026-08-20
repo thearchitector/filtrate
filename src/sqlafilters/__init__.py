@@ -1,3 +1,4 @@
+from .capabilities import Capability, filter_capabilities
 from .exceptions import BadRelationshipError, FilterCompilationError, InvalidFilterError
 from .filters import Filter, Match, Related
 from .mixins import Dynamic, FilterableMixin
@@ -24,6 +25,7 @@ from .types import FilterClause, Property
 __all__ = (
     "BadRelationshipError",
     "Between",
+    "Capability",
     "Contains",
     "ContainsExact",
     "Dynamic",
@@ -48,4 +50,5 @@ __all__ = (
     "Related",
     "StartsWith",
     "StartsWithExact",
+    "filter_capabilities",
 )
