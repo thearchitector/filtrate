@@ -1,3 +1,0 @@
-# Use Exists and Filter negation for null presence
-
-The `Exists` Predicate means that a Queryable Property has at least one non-null value. Its logical complement is a Filter containing `Exists()` with `negate=True`. For an ordinary scalar property the negated Filter is equivalent to `IS NULL`; for a Proxied Attribute it means that empty, missing, and all-null related values match, while any non-null related value satisfies the positive Filter. This deliberately prioritizes the filter language's presence vocabulary over a particular SQL construct, although SQLAlchemy may render `EXISTS` or `NOT EXISTS` for a Proxied Attribute.
