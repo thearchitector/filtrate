@@ -1,6 +1,6 @@
 from collections.abc import Callable
-from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from beartype.vale import Is, IsAttr
 from sqlalchemy import Date, DateTime, Integer, Numeric, String, Time
@@ -11,10 +11,18 @@ if TYPE_CHECKING:
     from beartype.vale._core._valecore import BeartypeValidator
 
 
-class Capability(Enum):
-    TEXTUAL = auto()
-    ORDERED = auto()
+@dataclass(frozen=True, slots=True)
+class Capability:
+    key: str
 
+    # builtins
+
+    TEXTUAL: ClassVar[Capability]
+    ORDERED: ClassVar[Capability]
+
+
+Capability.TEXTUAL = Capability("builtin:textual")
+Capability.ORDERED = Capability("builtin:ordered")
 
 _CAPABILITIES_ATTRIBUTE = "__sqlafilters_capabilities__"
 _DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset()

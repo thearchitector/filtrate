@@ -19,6 +19,7 @@ from .operators import (
     Predicate,
     StartsWith,
     StartsWithExact,
+    register,
 )
 from .types import FilterClause, Property
 
@@ -51,4 +52,5 @@ __all__ = (
     "StartsWith",
     "StartsWithExact",
     "filter_capabilities",
+    "register",
 )

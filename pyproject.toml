@@ -37,7 +37,6 @@ exclude_also = ["TYPE_CHECKING", "NotImplementedError"]
 
 [tool.ruff]
 unsafe-fixes = false
-extend-include = ["*.md"]
 
 [tool.ruff.lint]
 extend-select = ["ANN", "ASYNC", "PYI", "PT", "SIM", "TID", "PERF", "TRY", "PGH003"]

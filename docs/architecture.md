@@ -370,9 +370,7 @@ Conceptually, compilation performs the following sequence:
 
 ```python
 def _compile_match(
-    model: type[DeclarativeBase],
-    match: Match,
-    dynamic: Dynamic | None,
+    model: type[DeclarativeBase], match: Match, dynamic: Dynamic | None
 ) -> FilterClause:
     if dynamic is not None:
         try:
@@ -388,9 +386,7 @@ def _compile_match(
 
 
 def _compile_related(
-    model: type[DeclarativeBase],
-    related: Related,
-    dynamic: Dynamic | None,
+    model: type[DeclarativeBase], related: Related, dynamic: Dynamic | None
 ) -> FilterClause:
     relationship = resolve_relationship(model, related.relationship)
     target_model = relationship.mapper.class_
@@ -402,9 +398,7 @@ def _compile_related(
 
 
 def _compile_filter(
-    model: type[DeclarativeBase],
-    filter_: Filter,
-    dynamic: Dynamic | None,
+    model: type[DeclarativeBase], filter_: Filter, dynamic: Dynamic | None
 ) -> FilterClause:
     if filter_.match is not None:
         clause = _compile_match(model, filter_.match, dynamic)
@@ -432,10 +426,7 @@ Traversal is depth-first and stops at the first failing leaf. The compiler does 
 class FilterableMixin:
     @classmethod
     def as_filtered_by(
-        cls,
-        filter_: Filter,
-        *,
-        dynamic: Dynamic | None = None,
+        cls, filter_: Filter, *, dynamic: Dynamic | None = None
     ) -> FilterClause: ...
 ```
 

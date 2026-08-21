@@ -1,12 +1,35 @@
+<!-- pragma: no ai -->
 # sqlafilters
 
 [![bear-ified](https://raw.githubusercontent.com/beartype/beartype-assets/main/badge/bear-ified.svg)](https://beartype.readthedocs.io)
 
-`sqlafilters` lets you arbitrarily filter declarative SQLAlchemy models.
+Build reusable, composable filters for declarative SQLAlchemy models.
+
+It supports:
+
+- building filters with AND, OR, and negation at any depth
+- filtering ORM properties
+  - mapped columns
+  - hybrid proprties
+  - relationships
+  - association proxies
+- dynamic properties backed by custom SQL expressions
+- a bunch of built-in operators and predicates, such as `Contains`, `OneOf`, `Exists` etc.
+- a capability system to keep Predicates reusable and type-safe, and support filtering on custom ORM types
 
 Requires Python 3.14 and SQLAlchemy `>=2,<2.1`. Type checked.
 
+## Installation
+
+```bash
+python -m pip install sqlafilters
+# or
+uv add sqlafilters
+```
+
 ## Quick start
+
+Add `FilterableMixin` to a declarative model, construct a `Filter`, and use `as_filtered_by()` anywhere SQLAlchemy accepts a where clause:
 
 ```python
 from sqlalchemy import select
@@ -30,7 +53,24 @@ filter_ = Filter(match=Match(property="age", using=Equals(42)))
 statement = select(User).where(User.as_filtered_by(filter_))
 ```
 
-Filters compose with `and_`, `or_`, and `negate` at any depth:
+Filters are frozen and hashable, making them safe to reuse as cache keys or compare as values.
+
+### Built-in predicates
+
+Predicates describe an operation applied to a property:
+
+| Family | Predicates |
+| --- | --- |
+| Comparison | `Equals`, `OneOf` |
+| Ordering | `LessThan`, `LessThanOrEqual`, `GreaterThan`, `GreaterThanOrEqual`, `Between` |
+| Text | `Contains`, `StartsWith`, `EndsWith` and their `Exact` variants |
+| Presence | `Exists` |
+
+Text Predicates escape `%` and `_`. The default variants are case-insensitive; `Exact` variants are case-sensitive.
+
+## Composing filters
+
+Filters compose with `and_`, `or_`, and `negate`:
 
 ```python
 from sqlafilters import Contains, GreaterThan, OneOf
@@ -46,16 +86,17 @@ filter_ = Filter(
         ),
     )
 )
+```
 
+Filters, at any level, can be negated:
+
+```python
 not_42 = Filter(match=Match(property="age", using=Equals(42)), negate=True)
 ```
 
-`Filter`, `Match`, `Related`, and built-in Predicates are frozen, hashable values.
+## Filter relationships
 
-## Relationships
-
-`Related` applies its complete inner filter to one related row. Collections use
-SQLAlchemy's `.any()` and scalar relationships use `.has()`:
+You can filter models by their relationships using `Related`. Its entire inner filter will apply to the same related row:
 
 ```python
 from sqlafilters import Related
@@ -73,90 +114,51 @@ filter_ = Filter(
 )
 ```
 
-Nest `Related` for multiple hops. Dotted property names do not imply traversal.
+### Association proxies
 
 Direct column-targeted association proxies work like ordinary properties:
 
 ```python
-filter_ = Filter(match=Match(property="tag_names", using=Equals("python")))
+from sqlalchemy import ForeignKey
+from sqlalchemy.ext.associationproxy import association_proxy
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlafilters import Contains, Filter, FilterableMixin, Match
+
+
+class Foo(Base):
+    __tablename__ = "foo"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str]
+
+
+class Bar(FilterableMixin, Base):
+    __tablename__ = "bar"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    foo_id: Mapped[int] = mapped_column(ForeignKey("foo.id"))
+    foo: Mapped[Foo] = relationship()
+
+    foo_name = association_proxy("foo", "name")
+
+
+filter_ = Filter(match=Match(property="foo_name", using=Contains("python")))
 ```
 
-## Dynamic matches
+## Extending the library
 
-Pass `dynamic` when a model supports names that are not ordinary ORM attributes. It
-receives the active model and complete `Match` before ORM attribute resolution, and
-returns either a Boolean clause or `None`. A computed property is one line:
+### Custom predicates
 
-```python
-from sqlalchemy import func
-from sqlalchemy.orm import DeclarativeBase
-from sqlafilters import Contains, FilterClause
+You can implement custom Predicates to expose more filtering logic in your applications.
 
-
-def dynamic(
-    model: type[DeclarativeBase], match: Match
-) -> FilterClause | None:
-    if model is User and match.property == "email_domain":
-        domain = func.substr(User.email, func.instr(User.email, "@") + 1)
-        return match.using.apply(domain)
-    return None
-
-
-filter_ = Filter(match=Match(property="email_domain", using=Contains("example")))
-clause = User.as_filtered_by(filter_, dynamic=dynamic)
-```
-
-The same hook can compile dynamic key/value children. Given `Parent.children` and
-`Child(field, value)`:
+Just subclass `Predicate` (or `Operator` if your custom logic takes operands) and implement  `apply`:
 
 ```python
-from sqlalchemy import and_
+from sqlafilters import FilterClause, Operator, Property, register
 
 
-def child_fields(
-    model: type[DeclarativeBase], match: Match
-) -> FilterClause | None:
-    if model is not Parent:
-        return None
-
-    return Parent.children.any(
-        and_(
-            Child.field == match.property,
-            match.using.apply(Child.value),
-        )
-    )
-
-
-filter_ = Filter(match=Match(property="foo", using=Contains("hi")))
-clause = Parent.as_filtered_by(filter_, dynamic=child_fields)
-```
-
-This produces one correlated `EXISTS`, so `field == "foo"` and the value predicate
-must match the same child. A returned clause takes precedence over mapped properties;
-returning `None` asks the compiler to try ordinary ORM attribute access instead. If
-the dynamic function raises, compilation stops with `FilterCompilationError`.
-
-## Predicates
-
-| Family | Predicates |
-| --- | --- |
-| Comparison | `Equals`, `OneOf` |
-| Ordering | `LessThan`, `LessThanOrEqual`, `GreaterThan`, `GreaterThanOrEqual`, `Between` |
-| Text | `Contains`, `StartsWith`, `EndsWith` and their `Exact` variants |
-| Presence | `Exists` |
-
-Text predicates escape `%` and `_`. The default variants are case-insensitive;
-`Exact` variants use SQLAlchemy's case-sensitive operations. Negate a containing
-`Filter` instead of using separate not-equal or not-exists predicates.
-
-Custom Predicates implement `apply`:
-
-```python
-from dataclasses import dataclass
-from sqlafilters import Operator, Property
-
-
-@dataclass(frozen=True, slots=True)
+# you can also use @dataclass, but this decorator will do that for you AND enable runtime type checking!
+@register
 class IsDivisibleBy(Operator[int]):
     operand: int
 
@@ -164,16 +166,39 @@ class IsDivisibleBy(Operator[int]):
         return property % self.operand == 0
 ```
 
-## Predicate Capabilities
+### Dynamic properties
 
-Text and ordered predicates validate the SQLAlchemy type before constructing SQL.
-Standard string types support text search; integer, numeric, date, time, and datetime
-types support ordering. These families are represented by `Capability.TEXTUAL` and
-`Capability.ORDERED`. Plain SQLAlchemy `Enum` and unknown types receive neither
-capability, while equality, membership, and presence predicates remain unrestricted.
+Pass `dynamic` to support filter names that are not ordinary model attributes. For example, a filter can expose
+the domain portion of an email address without adding a mapped property:
 
-A custom `TypeDecorator` is opaque even when its `impl` is a registered built-in. It
-must declare the SQL operator families it actually supports:
+```python
+from sqlalchemy import func
+from sqlalchemy.orm import DeclarativeBase
+from sqlafilters import Contains, FilterClause
+
+
+def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
+    if match.property == "email_domain":
+        domain = func.substr(User.email, func.instr(User.email, "@") + 1)
+        return match.using.apply(domain)
+
+
+filter_ = Filter(match=Match(property="email_domain", using=Contains("example")))
+clause = User.as_filtered_by(filter_, dynamic=dynamic)
+```
+
+Returning a clause handles the match; doing nothing (`return None`) falls back to the model's ordinary attributes.
+
+### Custom type capabilities
+
+A capability is a type's declaration that it supports a particular kind of Predicate.
+
+A type is responsible for making an operation work, including any special handling it requires, so the Predicate can remain general and reusable.
+
+Text Predicates require `Capability.TEXTUAL`, and ordering Predicates require `Capability.ORDERED`.
+Equality, membership, and presence Predicates are unrestricted.
+
+Custom SQLAlchemy types must declare the operations they support:
 
 ```python
 from sqlalchemy import String
@@ -186,25 +211,3 @@ class CaseFoldedText(TypeDecorator[str]):
     impl = String
     cache_ok = True
 ```
-
-`filter_capabilities` decorates any `TypeEngine` subclass and returns that class
-unchanged. Declarations may contain multiple capabilities, may be stacked, and are
-inherited additively. Pass `replace=True` to replace rather than extend inherited
-capabilities, including with an empty declaration.
-
-SQLAlchemy `Enum` deliberately has no text capability because native enum behavior
-varies by dialect. A custom native-enum subclass may declare `TEXTUAL` after it
-implements portable text comparison semantics itself. A declaration only enables
-validation: it does not add casts, inspect `impl` or `python_type`, or guarantee
-database-specific behavior. Applying an unsupported restricted predicate raises
-`InvalidFilterError`.
-
-## Errors and safety
-
-Unknown properties raise `FilterCompilationError`; invalid `Related` names raise
-`BadRelationshipError`. Predicate errors propagate unchanged. Exceptions from a
-dynamic function are translated to `FilterCompilationError` and retained as its cause.
-
-Treat custom Predicates and dynamic functions as trusted SQL construction. Applications
-accepting untrusted filters should allowlist properties and relationships and bound
-tree depth, width, and match count.
