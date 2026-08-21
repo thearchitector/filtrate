@@ -213,3 +213,7 @@ class CaseFoldedText(TypeDecorator[str]):
     impl = String
     cache_ok = True
 ```
+
+## License
+
+BSD 3-Clause Clear.
