@@ -1,7 +1,9 @@
 <!-- pragma: no ai -->
 # sqlafilters
 
+![PyPI Downloads](https://img.shields.io/pypi/dm/sqlafilters?style=flat)
 [![bear-ified](https://raw.githubusercontent.com/beartype/beartype-assets/main/badge/bear-ified.svg)](https://beartype.readthedocs.io)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/thearchitector/sqlafilters/ci.yaml?style=flat)
 
 Build reusable, composable filters for declarative SQLAlchemy models.
 
