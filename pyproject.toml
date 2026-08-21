@@ -1,17 +1,30 @@
 [project]
 name = "sqlafilters"
 version = "0.1.0"
-description = "Filtering mixin for SQLAlchemy"
+description = "Build reusable, composable filters for declarative SQLAlchemy models"
 readme = "README.md"
 license = "BSD-3-Clause-Clear"
 authors = [
     { name = "Elias Gabriel", email = "oss@eliasfgabriel.com" }
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed"
+]
+keywords = ["typed", "database", "orm", "sqlalchemy", "filtering", "filters"]
 requires-python = ">=3.14"
 dependencies = [
     "beartype>=0.23.0rc0,<1",
     "sqlalchemy>=2,<2.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/thearchitector/sqlafilters"
+Repository = "https://github.com/thearchitector/sqlafilters.git"
+Issues = "https://github.com/thearchitector/sqlafilters/issues"
 
 [dependency-groups]
 dev = [
@@ -65,5 +78,5 @@ strict-literal-narrowing = true
 strict-generic-narrowing = true
 
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
+requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
