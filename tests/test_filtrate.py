@@ -25,7 +25,7 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.sql.elements import ColumnElement
 
-from sqlafilters import (
+from filtrate import (
     BadRelationshipError,
     Between,
     Contains,

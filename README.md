@@ -1,9 +1,9 @@
 <!-- pragma: no ai -->
-# sqlafilters
+# filtrate
 
-![PyPI Downloads](https://img.shields.io/pypi/dm/sqlafilters?style=flat)
+![PyPI Downloads](https://img.shields.io/pypi/dm/filtrate?style=flat)
 [![bear-ified](https://raw.githubusercontent.com/beartype/beartype-assets/main/badge/bear-ified.svg)](https://beartype.readthedocs.io)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/thearchitector/sqlafilters/ci.yaml?style=flat)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/thearchitector/filtrate/ci.yaml?style=flat)
 
 Build reusable, composable filters for declarative SQLAlchemy models.
 
@@ -24,9 +24,9 @@ Requires Python 3.14 and SQLAlchemy `>=2,<2.1`. Type checked.
 ## Installation
 
 ```bash
-python -m pip install sqlafilters
+python -m pip install filtrate
 # or
-uv add sqlafilters
+uv add filtrate
 ```
 
 ## Quick start
@@ -36,7 +36,7 @@ Add `FilterableMixin` to a declarative model, construct a `Filter`, and use `as_
 ```python
 from sqlalchemy import select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlafilters import Equals, Filter, FilterableMixin, Match
+from filtrate import Equals, Filter, FilterableMixin, Match
 
 
 class Base(DeclarativeBase):
@@ -75,7 +75,7 @@ Text Predicates escape `%` and `_`. The default variants are case-insensitive; `
 Filters compose with `and_`, `or_`, and `negate`:
 
 ```python
-from sqlafilters import Contains, GreaterThan, OneOf
+from filtrate import Contains, GreaterThan, OneOf
 
 filter_ = Filter(
     and_=(
@@ -101,7 +101,7 @@ not_42 = Filter(match=Match(property="age", using=Equals(42)), negate=True)
 You can filter models by their relationships using `Related`. Its entire inner filter will apply to the same related row:
 
 ```python
-from sqlafilters import Related
+from filtrate import Related
 
 filter_ = Filter(
     via=Related(
@@ -124,7 +124,7 @@ Direct column-targeted association proxies work like ordinary properties:
 from sqlalchemy import ForeignKey
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlafilters import Contains, Filter, FilterableMixin, Match
+from filtrate import Contains, Filter, FilterableMixin, Match
 
 
 class Foo(Base):
@@ -156,7 +156,7 @@ You can implement custom Predicates to expose more filtering logic in your appli
 Just subclass `Predicate` (or `Operator` if your custom logic takes operands) and implement  `apply`:
 
 ```python
-from sqlafilters import FilterClause, Operator, Property, register
+from filtrate import FilterClause, Operator, Property, register
 
 
 # you can also use @dataclass, but this decorator will do that for you AND enable runtime type checking!
@@ -176,7 +176,7 @@ the domain portion of an email address without adding a mapped property:
 ```python
 from sqlalchemy import func
 from sqlalchemy.orm import DeclarativeBase
-from sqlafilters import Contains, FilterClause
+from filtrate import Contains, FilterClause
 
 
 def dynamic(model: type[DeclarativeBase], match: Match) -> FilterClause | None:
@@ -205,7 +205,7 @@ Custom SQLAlchemy types must declare the operations they support:
 ```python
 from sqlalchemy import String
 from sqlalchemy.types import TypeDecorator
-from sqlafilters import Capability, filter_capabilities
+from filtrate import Capability, filter_capabilities
 
 
 @filter_capabilities(Capability.TEXTUAL)

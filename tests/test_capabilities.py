@@ -32,7 +32,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.type_api import TypeEngine
 from sqlalchemy.types import TypeDecorator
 
-from sqlafilters import (
+from filtrate import (
     Between,
     Capability,
     Contains,

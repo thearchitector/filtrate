@@ -24,7 +24,7 @@ class Capability:
 Capability.TEXTUAL = Capability("builtin:textual")
 Capability.ORDERED = Capability("builtin:ordered")
 
-_CAPABILITIES_ATTRIBUTE = "__sqlafilters_capabilities__"
+_CAPABILITIES_ATTRIBUTE = "__filtrate_capabilities__"
 _DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset()
 
 

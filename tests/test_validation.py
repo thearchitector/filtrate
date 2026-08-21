@@ -7,7 +7,7 @@ from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql.elements import ColumnElement
 
-from sqlafilters import (
+from filtrate import (
     Between,
     Contains,
     ContainsExact,

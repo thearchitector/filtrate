@@ -1,14 +1,14 @@
-# sqlafilters architecture and design
+# filtrate architecture and design
 
 ## Status and authority
 
-This document is the normative architecture and design for `sqlafilters` version 0.1. It refines the conceptual sketch in `PROMPT.md`; when the two disagree, this document takes precedence.
+This document is the normative architecture and design for `filtrate` version 0.1. It refines the conceptual sketch in `PROMPT.md`; when the two disagree, this document takes precedence.
 
 The domain language is defined in [`CONTEXT.md`](CONTEXT.md). Decisions whose rationale would otherwise be surprising are recorded in [`adr/`](adr/).
 
 ## Purpose
 
-`sqlafilters` lets a SQLAlchemy mapped class compile an immutable Filter tree into one SQLAlchemy Boolean where-clause expression. Consumers construct Filter objects in Python and attach the resulting expression to a statement:
+`filtrate` lets a SQLAlchemy mapped class compile an immutable Filter tree into one SQLAlchemy Boolean where-clause expression. Consumers construct Filter objects in Python and attach the resulting expression to a statement:
 
 ```python
 filter_ = Filter(
@@ -80,7 +80,7 @@ The compiler accepts a concrete mapped subclass of `DeclarativeBase` at that ent
 ## Package structure
 
 ```text
-src/sqlafilters/
+src/filtrate/
 ├── __init__.py       # supported public re-exports
 ├── capabilities.py   # Operator Capability declarations and validation
 ├── exceptions.py     # InvalidFilterError, FilterCompilationError, BadRelationshipError
@@ -94,7 +94,7 @@ src/sqlafilters/
 The package root re-exports the supported API, including the `Dynamic` and `Property` typing aliases, so normal consumer imports remain concise:
 
 ```python
-from sqlafilters import (
+from filtrate import (
     BadRelationshipError,
     Between,
     Capability,
@@ -259,7 +259,7 @@ a supported built-in. Its class must opt in explicitly:
 ```python
 from sqlalchemy import String
 from sqlalchemy.types import TypeDecorator
-from sqlafilters import Capability, filter_capabilities
+from filtrate import Capability, filter_capabilities
 
 
 @filter_capabilities(Capability.TEXTUAL)
@@ -552,7 +552,7 @@ SQLite is the executable behavioral reference for version 0.1. Dialect neutralit
 6. Implement private property and direct relationship resolution, including `BadRelationshipError` translation.
 7. Implement recursive Match, AND, OR, and Related compilation, including node-level negation, through `_compile_filter()`.
 8. Add the behavior-only `FilterableMixin` public entry point with its model-aware dynamic Match compiler.
-9. Re-export the supported API, including `Dynamic`, `Predicate`, `Operator`, `Property`, `FilterClause`, `Related`, and `BadRelationshipError`, from `sqlafilters.__init__`.
+9. Re-export the supported API, including `Dynamic`, `Predicate`, `Operator`, `Property`, `FilterClause`, `Related`, and `BadRelationshipError`, from `filtrate.__init__`.
 10. Remove the placeholder function and Pydantic dependency.
 11. Complete SQLite-backed behavioral coverage for nested trees, Related Filters, Proxied Attributes, custom Predicates, and failures.
 12. Update user-facing examples and API documentation to match the implemented contract.
